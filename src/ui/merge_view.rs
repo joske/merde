@@ -1524,6 +1524,116 @@ fn build_merge_view(
         }
     }
 
+    // ── Update chunk/conflict labels + nav sensitivity when cursor moves ───
+    if !any_binary {
+        // Left and right pane cursor tracking (chunk label only)
+        let connect_side_cursor = |buf: &TextBuffer, tv: &TextView, side: Side, is_right: bool| {
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            let cur = current_chunk.clone();
+            let lbl = chunk_label.clone();
+            let pb = prev_btn.clone();
+            let nb = next_btn.clone();
+            let av = active_view.clone();
+            let ltv = left_pane.text_view.clone();
+            let rtv = right_pane.text_view.clone();
+            let st = settings.clone();
+            let my_tv = tv.clone();
+            let sens = merge_nav_sensitivity;
+            buf.connect_cursor_position_notify(move |_| {
+                if av.borrow().clone() != my_tv {
+                    return;
+                }
+                let chunks = if is_right { rch.borrow() } else { lch.borrow() };
+                let cursor_line = cursor_line_from_view(&my_tv);
+                let at = diff_state::chunk_at_cursor(&chunks, cursor_line, side);
+                cur.set(at.map(|idx| (idx, is_right)));
+                let all = merge_change_indices(&lch.borrow(), &rch.borrow());
+                let total = all.len();
+                if total == 0 {
+                    lbl.set_label("No changes");
+                } else if let Some(cur_val) = cur.get() {
+                    if let Some(pos) = all.iter().position(|v| *v == cur_val) {
+                        lbl.set_label(&format!("Change {} of {}", pos + 1, total));
+                    } else {
+                        lbl.set_label(&format!("{total} changes"));
+                    }
+                } else {
+                    lbl.set_label(&format!("{total} changes"));
+                }
+                let wrap = st.borrow().wrap_around_navigation;
+                sens(
+                    &pb,
+                    &nb,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                    &my_tv,
+                    &ltv,
+                    &rtv,
+                    wrap,
+                );
+            });
+        };
+        connect_side_cursor(&left_buf, &left_pane.text_view, Side::A, false);
+        connect_side_cursor(&right_buf, &right_pane.text_view, Side::B, true);
+
+        // Middle pane cursor tracking (both chunk and conflict labels)
+        {
+            let lch = left_chunks.clone();
+            let rch = right_chunks.clone();
+            let cur = current_chunk.clone();
+            let ccur = current_conflict.clone();
+            let lbl = chunk_label.clone();
+            let clbl = conflict_label.clone();
+            let pb = prev_btn.clone();
+            let nb = next_btn.clone();
+            let pcb = prev_conflict_btn.clone();
+            let ncb = next_conflict_btn.clone();
+            let av = active_view.clone();
+            let ltv = left_pane.text_view.clone();
+            let rtv = right_pane.text_view.clone();
+            let mtv = middle_pane.text_view.clone();
+            let mb = middle_buf.clone();
+            let st = settings.clone();
+            let sens = merge_nav_sensitivity;
+            let csens = conflict_nav_sensitivity;
+            middle_buf.connect_cursor_position_notify(move |_| {
+                if av.borrow().clone() != mtv {
+                    return;
+                }
+                let cursor_line = cursor_line_from_view(&mtv);
+
+                // Chunk: check left_chunks (side B = middle) and right_chunks (side A = middle)
+                let left_at = diff_state::chunk_at_cursor(&lch.borrow(), cursor_line, Side::B);
+                let right_at = diff_state::chunk_at_cursor(&rch.borrow(), cursor_line, Side::A);
+                let at = left_at
+                    .map(|idx| (idx, false))
+                    .or_else(|| right_at.map(|idx| (idx, true)));
+                cur.set(at);
+                update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), at);
+
+                let wrap = st.borrow().wrap_around_navigation;
+                sens(
+                    &pb,
+                    &nb,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                    &mtv,
+                    &ltv,
+                    &rtv,
+                    wrap,
+                );
+
+                // Conflict: check if cursor is on a marker line
+                let markers = find_conflict_markers(&mb);
+                let on_marker = markers.iter().find(|&&l| l == cursor_line).copied();
+                ccur.set(on_marker);
+                update_conflict_label(&clbl, &mb, on_marker);
+                csens(&pcb, &ncb, &mb, &mtv, wrap);
+            });
+        }
+    }
+
     // ── Find bar for merge view ───────────────────────────────────
     let find_entry = Entry::new();
     find_entry.set_placeholder_text(Some("Find (Ctrl+F)"));

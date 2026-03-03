@@ -798,6 +798,38 @@ pub(super) fn build_diff_view(
         }
     }
 
+    // ── Update chunk label + nav sensitivity when cursor moves ───
+    if !any_binary {
+        let connect_cursor_tracking = |buf: &TextBuffer, tv: &TextView, side: Side| {
+            let ch = chunks.clone();
+            let cur = current_chunk.clone();
+            let lbl = chunk_label.clone();
+            let pb = prev_btn.clone();
+            let nb = next_btn.clone();
+            let av = active_view.clone();
+            let st = settings.clone();
+            let my_tv = tv.clone();
+            buf.connect_cursor_position_notify(move |_| {
+                // Only react when this view is the active (focused) one
+                if av.borrow().clone() != my_tv {
+                    return;
+                }
+                let chunks_ref = ch.borrow();
+                let cursor_line = cursor_line_from_view(&my_tv);
+                let at = diff_state::chunk_at_cursor(&chunks_ref, cursor_line, side);
+                cur.set(at);
+                update_chunk_label(&lbl, &chunks_ref, at);
+                let wrap = st.borrow().wrap_around_navigation;
+                let (prev, next) =
+                    diff_state::chunk_nav_sensitivity(&chunks_ref, cursor_line, side, wrap);
+                pb.set_sensitive(prev);
+                nb.set_sensitive(next);
+            });
+        };
+        connect_cursor_tracking(&left_buf, &left_pane.text_view, Side::A);
+        connect_cursor_tracking(&right_buf, &right_pane.text_view, Side::B);
+    }
+
     // ── Find bar ──────────────────────────────────────────────────
     let find_entry = Entry::new();
     find_entry.set_placeholder_text(Some("Find (Ctrl+F)"));

@@ -125,6 +125,33 @@ pub(super) fn chunk_nav_sensitivity(
     (prev, next)
 }
 
+/// Find the chunk index containing `cursor_line`, if any non-Equal chunk does.
+///
+/// Uses `start_a`/`end_a` when `side == Side::A`, otherwise `start_b`/`end_b`.
+/// Returns `None` if the cursor is in an Equal region or there are no chunks.
+#[must_use]
+pub(super) fn chunk_at_cursor(
+    chunks: &[DiffChunk],
+    cursor_line: usize,
+    side: Side,
+) -> Option<usize> {
+    chunks.iter().enumerate().find_map(|(i, c)| {
+        if c.tag == DiffTag::Equal {
+            return None;
+        }
+        let (start, end) = if side == Side::A {
+            (c.start_a, c.end_a)
+        } else {
+            (c.start_b, c.end_b)
+        };
+        if cursor_line >= start && cursor_line < end {
+            Some(i)
+        } else {
+            None
+        }
+    })
+}
+
 /// Case-insensitive substring search returning `(byte_start, byte_end)` pairs.
 ///
 /// Allows overlapping matches (advances by 1 byte after each match).
@@ -444,6 +471,44 @@ mod tests {
             chunk_nav_sensitivity(&chunks, 5, Side::A, false),
             (true, true)
         );
+    }
+
+    // ── chunk_at_cursor ─────────────────────────────────────────────────
+
+    #[test]
+    fn chunk_at_cursor_empty() {
+        assert_eq!(chunk_at_cursor(&[], 0, Side::A), None);
+    }
+
+    #[test]
+    fn chunk_at_cursor_in_equal() {
+        let chunks = [eq(0, 5, 0, 5), rep(5, 8, 5, 7), eq(8, 10, 7, 9)];
+        assert_eq!(chunk_at_cursor(&chunks, 2, Side::A), None);
+    }
+
+    #[test]
+    fn chunk_at_cursor_in_change_side_a() {
+        let chunks = [eq(0, 5, 0, 5), rep(5, 8, 5, 7), eq(8, 10, 7, 9)];
+        assert_eq!(chunk_at_cursor(&chunks, 5, Side::A), Some(1));
+        assert_eq!(chunk_at_cursor(&chunks, 7, Side::A), Some(1));
+        // end is exclusive
+        assert_eq!(chunk_at_cursor(&chunks, 8, Side::A), None);
+    }
+
+    #[test]
+    fn chunk_at_cursor_in_change_side_b() {
+        let chunks = [eq(0, 5, 0, 5), rep(5, 8, 5, 7), eq(8, 10, 7, 9)];
+        assert_eq!(chunk_at_cursor(&chunks, 5, Side::B), Some(1));
+        assert_eq!(chunk_at_cursor(&chunks, 6, Side::B), Some(1));
+        assert_eq!(chunk_at_cursor(&chunks, 7, Side::B), None);
+    }
+
+    #[test]
+    fn chunk_at_cursor_insert_zero_range() {
+        // An insert has zero range on side A
+        let chunks = [ins(5, 5, 5, 8)];
+        assert_eq!(chunk_at_cursor(&chunks, 5, Side::A), None);
+        assert_eq!(chunk_at_cursor(&chunks, 5, Side::B), Some(0));
     }
 
     // ── format_chunk_label ──────────────────────────────────────────────
