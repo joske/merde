@@ -39,9 +39,11 @@ use crate::{
 };
 
 mod common;
+mod diff_state;
 mod diff_view;
 mod dir_window;
 mod file_window;
+mod merge_state;
 mod merge_view;
 mod preferences;
 mod vcs_window;
