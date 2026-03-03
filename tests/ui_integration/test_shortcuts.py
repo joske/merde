@@ -15,14 +15,18 @@ def _open_diff(app_process, fixture_path):
 def _send_keys(key_combo):
     """Send a key combo to the mergers window via xdotool.
 
-    Uses xdotool window search + key targeting to avoid terminal escape
-    sequence leakage that dogtail.rawinput.keyCombo suffers from.
+    Focuses the window first so GTK accelerators fire, then sends the key.
+    Using --window alone is not sufficient: GTK accelerators require the
+    window to actually hold X11 focus.
     """
     wids = subprocess.check_output(
         ["xdotool", "search", "--name", "mergers"]
     ).decode().strip().splitlines()
     assert wids, "No mergers window found via xdotool"
-    subprocess.run(["xdotool", "key", "--window", wids[0], key_combo], check=True)
+    # Focus the frame window (last entry is the outermost visible frame)
+    wid = wids[-1]
+    subprocess.run(["xdotool", "windowfocus", "--sync", wid], check=True)
+    subprocess.run(["xdotool", "key", key_combo], check=True)
 
 
 def test_ctrl_f_opens_find_bar(app_process, fixture_path):
