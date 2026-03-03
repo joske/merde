@@ -393,12 +393,23 @@ pub(super) fn build_diff_view(
     toolbar.append(&undo_redo_box);
     let swap_btn = Button::from_icon_name("object-flip-horizontal-symbolic");
     swap_btn.set_tooltip_text(Some("Swap panes"));
+    if any_binary {
+        swap_btn.set_sensitive(false);
+        prev_btn.set_sensitive(false);
+        next_btn.set_sensitive(false);
+        undo_btn.set_sensitive(false);
+        redo_btn.set_sensitive(false);
+    }
 
     // Text filter toggles
     let blank_toggle = ToggleButton::with_label("Blanks");
     blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
     let ws_toggle = ToggleButton::with_label("Spaces");
     ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
+    if any_binary {
+        blank_toggle.set_sensitive(false);
+        ws_toggle.set_sensitive(false);
+    }
 
     let filter_box = GtkBox::new(Orientation::Horizontal, 0);
     filter_box.add_css_class("linked");
@@ -647,32 +658,34 @@ pub(super) fn build_diff_view(
         };
 
         let pending = Rc::new(Cell::new(false));
-        let connect_refresh = |buf: &TextBuffer| {
-            let lb = left_buf.clone();
-            let rb = right_buf.clone();
-            let ch = chunks.clone();
-            let p = pending.clone();
-            let ib = ignore_blanks.clone();
-            let iw = ignore_whitespace.clone();
-            let make_cb = make_on_complete.clone();
-            buf.connect_changed(move |_| {
-                if !p.get() {
-                    p.set(true);
-                    let lb = lb.clone();
-                    let rb = rb.clone();
-                    let ch = ch.clone();
-                    let p = p.clone();
-                    let ib = ib.clone();
-                    let iw = iw.clone();
-                    let cb = make_cb();
-                    gtk4::glib::idle_add_local_once(move || {
-                        refresh_diff(&lb, &rb, &ch, cb, ib.get(), iw.get(), &p);
-                    });
-                }
-            });
-        };
-        connect_refresh(&left_buf);
-        connect_refresh(&right_buf);
+        if !any_binary {
+            let connect_refresh = |buf: &TextBuffer| {
+                let lb = left_buf.clone();
+                let rb = right_buf.clone();
+                let ch = chunks.clone();
+                let p = pending.clone();
+                let ib = ignore_blanks.clone();
+                let iw = ignore_whitespace.clone();
+                let make_cb = make_on_complete.clone();
+                buf.connect_changed(move |_| {
+                    if !p.get() {
+                        p.set(true);
+                        let lb = lb.clone();
+                        let rb = rb.clone();
+                        let ch = ch.clone();
+                        let p = p.clone();
+                        let ib = ib.clone();
+                        let iw = iw.clone();
+                        let cb = make_cb();
+                        gtk4::glib::idle_add_local_once(move || {
+                            refresh_diff(&lb, &rb, &ch, cb, ib.get(), iw.get(), &p);
+                        });
+                    }
+                });
+            };
+            connect_refresh(&left_buf);
+            connect_refresh(&right_buf);
+        }
 
         // Initial async diff (must be after chunk_label + chunk_maps exist)
         if !identical && !any_binary {

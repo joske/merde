@@ -438,7 +438,9 @@ pub(super) fn build_dir_window(
         }
     });
 
-    // Shared selection model — both panes use it; CSS hides highlight in unfocused pane.
+    // Both panes share the same SingleSelection so the selected row is
+    // highlighted on both sides.  The inactive pane is dimmed via opacity
+    // and bordered differently to distinguish from the focused pane.
     let dir_sel = SingleSelection::new(Some(tree_model.clone()));
 
     // ── Left pane ──────────────────────────────────────────────────
@@ -459,6 +461,7 @@ pub(super) fn build_dir_window(
 
     // ── Right pane ─────────────────────────────────────────────────
     let right_view = ColumnView::new(Some(dir_sel.clone()));
+    right_view.set_opacity(0.55);
     right_view.set_show_column_separators(true);
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
@@ -476,40 +479,93 @@ pub(super) fn build_dir_window(
     }
 
     // Track which pane was last focused (true = left, false = right).
-    // CSS hides selection highlight in the unfocused pane.
+    // Both panes share the same SingleSelection so the selected row is
+    // highlighted on both sides; CSS borders distinguish the active pane.
     let focused_left = Rc::new(Cell::new(true));
     let sel_syncing = Rc::new(Cell::new(false));
-    left_view.add_css_class("dir-pane-focused");
-    right_view.add_css_class("dir-pane-unfocused");
+    // CSS classes for focus borders are set on ScrolledWindows below (after
+    // they are created), since ColumnView content is clipped by its parent.
+    let left_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
+    let right_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
     {
         let fl = focused_left.clone();
         let lv = left_view.clone();
         let rv = right_view.clone();
+        let sel = dir_sel.clone();
+        let ls = left_scroll_slot.clone();
+        let rs = right_scroll_slot.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             if fl.get() {
                 return;
             }
             fl.set(true);
-            lv.add_css_class("dir-pane-focused");
-            lv.remove_css_class("dir-pane-unfocused");
-            rv.add_css_class("dir-pane-unfocused");
-            rv.remove_css_class("dir-pane-focused");
+            lv.set_opacity(1.0);
+            rv.set_opacity(0.55);
+            if let Some(sw) = ls.borrow().as_ref() {
+                sw.add_css_class("dir-pane-focused");
+                sw.remove_css_class("dir-pane-inactive");
+            }
+            if let Some(sw) = rs.borrow().as_ref() {
+                sw.remove_css_class("dir-pane-focused");
+                sw.add_css_class("dir-pane-inactive");
+            }
+            // Sync keyboard cursor to selection, then restore scroll position
+            let pos = sel.selected();
+            let vadj = lv
+                .ancestor(ScrolledWindow::static_type())
+                .and_downcast::<ScrolledWindow>()
+                .map(|sw| (sw.vadjustment().value(), sw));
+            let v = lv.clone();
+            gtk4::glib::idle_add_local_once(move || {
+                v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
+                if let Some((val, sw)) = vadj {
+                    let sw2 = sw.clone();
+                    gtk4::glib::idle_add_local_once(move || {
+                        sw2.vadjustment().set_value(val);
+                    });
+                }
+            });
         });
         left_view.add_controller(fc);
         let fl = focused_left.clone();
         let lv = left_view.clone();
         let rv = right_view.clone();
+        let sel = dir_sel.clone();
+        let ls = left_scroll_slot.clone();
+        let rs = right_scroll_slot.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             if !fl.get() {
                 return;
             }
             fl.set(false);
-            rv.add_css_class("dir-pane-focused");
-            rv.remove_css_class("dir-pane-unfocused");
-            lv.add_css_class("dir-pane-unfocused");
-            lv.remove_css_class("dir-pane-focused");
+            rv.set_opacity(1.0);
+            lv.set_opacity(0.55);
+            if let Some(sw) = rs.borrow().as_ref() {
+                sw.add_css_class("dir-pane-focused");
+                sw.remove_css_class("dir-pane-inactive");
+            }
+            if let Some(sw) = ls.borrow().as_ref() {
+                sw.remove_css_class("dir-pane-focused");
+                sw.add_css_class("dir-pane-inactive");
+            }
+            // Sync keyboard cursor to selection, then restore scroll position
+            let pos = sel.selected();
+            let vadj = rv
+                .ancestor(ScrolledWindow::static_type())
+                .and_downcast::<ScrolledWindow>()
+                .map(|sw| (sw.vadjustment().value(), sw));
+            let v = rv.clone();
+            gtk4::glib::idle_add_local_once(move || {
+                v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
+                if let Some((val, sw)) = vadj {
+                    let sw2 = sw.clone();
+                    gtk4::glib::idle_add_local_once(move || {
+                        sw2.vadjustment().set_value(val);
+                    });
+                }
+            });
         });
         right_view.add_controller(fc);
     }
@@ -553,6 +609,12 @@ pub(super) fn build_dir_window(
         .min_content_width(360)
         .child(&right_view)
         .build();
+
+    // Set initial focus border classes and populate slots for the handlers above.
+    left_scroll.add_css_class("dir-pane-focused");
+    right_scroll.add_css_class("dir-pane-inactive");
+    *left_scroll_slot.borrow_mut() = Some(left_scroll.clone());
+    *right_scroll_slot.borrow_mut() = Some(right_scroll.clone());
 
     // Synchronize vertical scrolling between left and right directory panes
     {

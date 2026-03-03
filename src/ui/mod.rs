@@ -69,7 +69,7 @@ const CSS: &str = r"
 .find-bar entry { min-height: 28px; }
 .goto-entry { min-height: 28px; }
 .dir-pane-focused { border: 2px solid @accent_color; border-radius: 4px; }
-.dir-pane-unfocused row:selected { background: transparent; }
+.dir-pane-inactive { border: 2px solid alpha(@borders, 0.5); border-radius: 4px; }
 ";
 
 const SEP: char = '\x1f';
