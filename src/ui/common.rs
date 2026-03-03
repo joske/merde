@@ -1527,6 +1527,7 @@ pub(super) fn navigate_chunk(
     right_buf: &TextBuffer,
     right_scroll: &ScrolledWindow,
     active_tv: &TextView,
+    wrap: bool,
 ) {
     let cursor_line = cursor_line_from_view(active_tv);
     let side = if active_tv == right_tv {
@@ -1535,7 +1536,7 @@ pub(super) fn navigate_chunk(
         Side::A
     };
 
-    if let Some(idx) = diff_state::find_next_chunk(chunks, cursor_line, direction, side) {
+    if let Some(idx) = diff_state::find_next_chunk(chunks, cursor_line, direction, side, wrap) {
         current_chunk.set(Some(idx));
         let chunk = &chunks[idx];
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);

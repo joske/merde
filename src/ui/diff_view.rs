@@ -485,6 +485,7 @@ pub(super) fn build_diff_view(
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
+        let st = settings.clone();
         prev_btn.connect_clicked(move |_| {
             navigate_chunk(
                 &ch.borrow(),
@@ -497,6 +498,7 @@ pub(super) fn build_diff_view(
                 &rb,
                 &rs,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
@@ -520,6 +522,7 @@ pub(super) fn build_diff_view(
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
+        let st = settings.clone();
         next_btn.connect_clicked(move |_| {
             navigate_chunk(
                 &ch.borrow(),
@@ -532,6 +535,7 @@ pub(super) fn build_diff_view(
                 &rb,
                 &rs,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
@@ -1011,6 +1015,7 @@ pub(super) fn build_diff_view(
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
+        let st = settings.clone();
         action.connect_activate(move |_, _| {
             navigate_chunk(
                 &ch.borrow(),
@@ -1023,6 +1028,7 @@ pub(super) fn build_diff_view(
                 &rb,
                 &rs,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();
@@ -1044,6 +1050,7 @@ pub(super) fn build_diff_view(
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
+        let st = settings.clone();
         action.connect_activate(move |_, _| {
             navigate_chunk(
                 &ch.borrow(),
@@ -1056,6 +1063,7 @@ pub(super) fn build_diff_view(
                 &rb,
                 &rs,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
             lf.queue_draw();

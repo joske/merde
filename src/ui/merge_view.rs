@@ -754,7 +754,8 @@ fn build_merge_view(
                                 lf: &DrawingArea,
                                 mf: &DrawingArea,
                                 rf: &DrawingArea,
-                                active: &TextView| {
+                                active: &TextView,
+                                wrap: bool| {
         // Search the active pane's own chunks in its own coordinates.
         let cl = cursor_line_from_view(active);
         let found: Option<(usize, bool)> = if active == ltv {
@@ -765,12 +766,15 @@ fn build_merge_view(
                 .map(|(i, _)| i)
                 .collect();
             let next = if direction > 0 {
-                ne.iter().find(|&&i| lch[i].start_a > cl).or(ne.first())
-            } else {
                 ne.iter()
-                    .rev()
-                    .find(|&&i| lch[i].start_a < cl)
-                    .or(ne.last())
+                    .find(|&&i| lch[i].start_a > cl)
+                    .or(if wrap { ne.first() } else { None })
+            } else {
+                ne.iter().rev().find(|&&i| lch[i].start_a < cl).or(if wrap {
+                    ne.last()
+                } else {
+                    None
+                })
             };
             next.map(|&idx| (idx, false))
         } else if active == rtv {
@@ -781,12 +785,15 @@ fn build_merge_view(
                 .map(|(i, _)| i)
                 .collect();
             let next = if direction > 0 {
-                ne.iter().find(|&&i| rch[i].start_b > cl).or(ne.first())
-            } else {
                 ne.iter()
-                    .rev()
-                    .find(|&&i| rch[i].start_b < cl)
-                    .or(ne.last())
+                    .find(|&&i| rch[i].start_b > cl)
+                    .or(if wrap { ne.first() } else { None })
+            } else {
+                ne.iter().rev().find(|&&i| rch[i].start_b < cl).or(if wrap {
+                    ne.last()
+                } else {
+                    None
+                })
             };
             next.map(|&idx| (idx, true))
         } else {
@@ -801,13 +808,13 @@ fn build_merge_view(
             if direction > 0 {
                 all.iter()
                     .find(|e| middle_line(e) > cl)
-                    .or(all.first())
+                    .or(if wrap { all.first() } else { None })
                     .copied()
             } else {
                 all.iter()
                     .rev()
                     .find(|e| middle_line(e) < cl)
-                    .or(all.last())
+                    .or(if wrap { all.last() } else { None })
                     .copied()
             }
         };
@@ -879,6 +886,7 @@ fn build_merge_view(
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
         let av = active_view.clone();
+        let st = settings.clone();
         prev_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
@@ -898,6 +906,7 @@ fn build_merge_view(
                 &mf,
                 &rf,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
             let focused_tv = av.borrow().clone();
@@ -926,6 +935,7 @@ fn build_merge_view(
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
         let av = active_view.clone();
+        let st = settings.clone();
         next_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
@@ -945,6 +955,7 @@ fn build_merge_view(
                 &mf,
                 &rf,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
             let focused_tv = av.borrow().clone();
@@ -967,7 +978,8 @@ fn build_merge_view(
                              rb: &TextBuffer,
                              rs: &ScrolledWindow,
                              lch: &Rc<RefCell<Vec<DiffChunk>>>,
-                             rch: &Rc<RefCell<Vec<DiffChunk>>>| {
+                             rch: &Rc<RefCell<Vec<DiffChunk>>>,
+                             wrap: bool| {
         let cursor_line = cursor_line_from_view(mtv);
         let markers = find_conflict_markers(mb);
         if markers.is_empty() {
@@ -977,13 +989,13 @@ fn build_merge_view(
             markers
                 .iter()
                 .find(|&&l| l > cursor_line)
-                .or(markers.first())
+                .or(if wrap { markers.first() } else { None })
         } else {
             markers
                 .iter()
                 .rev()
                 .find(|&&l| l < cursor_line)
-                .or(markers.last())
+                .or(if wrap { markers.last() } else { None })
         };
         if let Some(&line) = next {
             cur.set(Some(line));
@@ -1045,9 +1057,23 @@ fn build_merge_view(
         let nav = navigate_conflict;
         let upd = update_conflict_label;
         let av = active_view.clone();
+        let st = settings.clone();
         prev_conflict_btn.connect_clicked(move |_| {
             nav(
-                &cur, -1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
+                &cur,
+                -1,
+                &mtv,
+                &mb,
+                &ms,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &lch,
+                &rch,
+                st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &mb, cur.get());
             let focused_tv = av.borrow().clone();
@@ -1073,9 +1099,23 @@ fn build_merge_view(
         let nav = navigate_conflict;
         let upd = update_conflict_label;
         let av = active_view.clone();
+        let st = settings.clone();
         next_conflict_btn.connect_clicked(move |_| {
             nav(
-                &cur, 1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
+                &cur,
+                1,
+                &mtv,
+                &mb,
+                &ms,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &lch,
+                &rch,
+                st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &mb, cur.get());
             let focused_tv = av.borrow().clone();
@@ -1603,6 +1643,7 @@ fn build_merge_view(
         let mf = middle_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
+        let st = settings.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
@@ -1622,6 +1663,7 @@ fn build_merge_view(
                 &mf,
                 &rf,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
@@ -1646,6 +1688,7 @@ fn build_merge_view(
         let mf = middle_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
+        let st = settings.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
@@ -1665,6 +1708,7 @@ fn build_merge_view(
                 &mf,
                 &rf,
                 &av.borrow(),
+                st.borrow().wrap_around_navigation,
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
         });
@@ -1685,9 +1729,23 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
+        let st = settings.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
-                &cur, -1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
+                &cur,
+                -1,
+                &mtv,
+                &mb,
+                &ms,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &lch,
+                &rch,
+                st.borrow().wrap_around_navigation,
             );
             update_conflict_label(&lbl, &mb, cur.get());
         });
@@ -1708,9 +1766,23 @@ fn build_merge_view(
         let lch = left_chunks.clone();
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
+        let st = settings.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
-                &cur, 1, &mtv, &mb, &ms, &ltv, &lb, &ls, &rtv, &rb, &rs, &lch, &rch,
+                &cur,
+                1,
+                &mtv,
+                &mb,
+                &ms,
+                &ltv,
+                &lb,
+                &ls,
+                &rtv,
+                &rb,
+                &rs,
+                &lch,
+                &rch,
+                st.borrow().wrap_around_navigation,
             );
             update_conflict_label(&lbl, &mb, cur.get());
         });
