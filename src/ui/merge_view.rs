@@ -612,8 +612,10 @@ fn build_merge_view(
 
     let prev_btn = Button::from_icon_name("go-up-symbolic");
     prev_btn.set_tooltip_text(Some("Previous change (Alt+Up / Ctrl+E)"));
+    prev_btn.set_sensitive(false);
     let next_btn = Button::from_icon_name("go-down-symbolic");
     next_btn.set_tooltip_text(Some("Next change (Alt+Down / Ctrl+D)"));
+    next_btn.set_sensitive(false);
 
     let nav_box = GtkBox::new(Orientation::Horizontal, 0);
     nav_box.add_css_class("linked");
@@ -623,8 +625,10 @@ fn build_merge_view(
     // Conflict navigation buttons
     let prev_conflict_btn = Button::from_icon_name("go-up-symbolic");
     prev_conflict_btn.set_tooltip_text(Some("Previous conflict (Ctrl+J)"));
+    prev_conflict_btn.set_sensitive(false);
     let next_conflict_btn = Button::from_icon_name("go-down-symbolic");
     next_conflict_btn.set_tooltip_text(Some("Next conflict (Ctrl+K)"));
+    next_conflict_btn.set_sensitive(false);
     let conflict_nav_box = GtkBox::new(Orientation::Horizontal, 0);
     conflict_nav_box.add_css_class("linked");
     conflict_nav_box.append(&prev_conflict_btn);
@@ -868,6 +872,56 @@ fn build_merge_view(
             }
         };
 
+    // Sensitivity helper for merge chunk nav buttons.
+    // Determines whether prev/next have a valid target given the active pane.
+    #[allow(clippy::too_many_arguments)]
+    let merge_nav_sensitivity = |pb: &Button,
+                                 nb: &Button,
+                                 lch: &[DiffChunk],
+                                 rch: &[DiffChunk],
+                                 active: &TextView,
+                                 ltv: &TextView,
+                                 rtv: &TextView,
+                                 wrap: bool| {
+        let cl = cursor_line_from_view(active);
+        let has_any = lch.iter().any(|c| c.tag != DiffTag::Equal)
+            || rch.iter().any(|c| c.tag != DiffTag::Equal);
+        if !has_any {
+            pb.set_sensitive(false);
+            nb.set_sensitive(false);
+            return;
+        }
+        if wrap {
+            pb.set_sensitive(true);
+            nb.set_sensitive(true);
+            return;
+        }
+        // Probe forward / backward in the same way navigate_merge_chunk does.
+        if active == ltv {
+            let (p, n) = diff_state::chunk_nav_sensitivity(lch, cl, Side::A, false);
+            pb.set_sensitive(p);
+            nb.set_sensitive(n);
+        } else if active == rtv {
+            let (p, n) = diff_state::chunk_nav_sensitivity(rch, cl, Side::B, false);
+            pb.set_sensitive(p);
+            nb.set_sensitive(n);
+        } else {
+            // Middle pane — uses merge_change_indices
+            let all = merge_change_indices(lch, rch);
+            let middle_line = |&(idx, is_right): &(usize, bool)| -> usize {
+                if is_right {
+                    rch[idx].start_a
+                } else {
+                    lch[idx].start_b
+                }
+            };
+            let has_prev = all.iter().rev().any(|e| middle_line(e) < cl);
+            let has_next = all.iter().any(|e| middle_line(e) > cl);
+            pb.set_sensitive(has_prev);
+            nb.set_sensitive(has_next);
+        }
+    };
+
     // Prev chunk
     {
         let lch = left_chunks.clone();
@@ -888,8 +942,11 @@ fn build_merge_view(
         let rf = right_pane.filler_overlay.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
+        let sens = merge_nav_sensitivity;
         let av = active_view.clone();
         let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         prev_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
@@ -912,6 +969,16 @@ fn build_merge_view(
                 st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            sens(
+                &pb,
+                &nb,
+                &lch.borrow(),
+                &rch.borrow(),
+                &av.borrow(),
+                &ltv,
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
             let focused_tv = av.borrow().clone();
             focused_tv.grab_focus();
         });
@@ -937,8 +1004,11 @@ fn build_merge_view(
         let rf = right_pane.filler_overlay.clone();
         let nav = navigate_merge_chunk;
         let upd = update_merge_label;
+        let sens = merge_nav_sensitivity;
         let av = active_view.clone();
         let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         next_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
@@ -961,6 +1031,16 @@ fn build_merge_view(
                 st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            sens(
+                &pb,
+                &nb,
+                &lch.borrow(),
+                &rch.borrow(),
+                &av.borrow(),
+                &ltv,
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
             let focused_tv = av.borrow().clone();
             focused_tv.grab_focus();
         });
@@ -1042,6 +1122,27 @@ fn build_merge_view(
         }
     };
 
+    // Sensitivity helper for conflict nav buttons.
+    let conflict_nav_sensitivity =
+        |pb: &Button, nb: &Button, mb: &TextBuffer, mtv: &TextView, wrap: bool| {
+            let markers = find_conflict_markers(mb);
+            if markers.is_empty() {
+                pb.set_sensitive(false);
+                nb.set_sensitive(false);
+                return;
+            }
+            if wrap {
+                pb.set_sensitive(true);
+                nb.set_sensitive(true);
+                return;
+            }
+            let cl = cursor_line_from_view(mtv);
+            let has_prev = markers.iter().rev().any(|&l| l < cl);
+            let has_next = markers.iter().any(|&l| l > cl);
+            pb.set_sensitive(has_prev);
+            nb.set_sensitive(has_next);
+        };
+
     // Prev conflict
     {
         let cur = current_conflict.clone();
@@ -1059,8 +1160,11 @@ fn build_merge_view(
         let lbl = conflict_label.clone();
         let nav = navigate_conflict;
         let upd = update_conflict_label;
+        let csens = conflict_nav_sensitivity;
         let av = active_view.clone();
         let st = settings.clone();
+        let pcb = prev_conflict_btn.clone();
+        let ncb = next_conflict_btn.clone();
         prev_conflict_btn.connect_clicked(move |_| {
             nav(
                 &cur,
@@ -1079,6 +1183,7 @@ fn build_merge_view(
                 st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &mb, cur.get());
+            csens(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
             let focused_tv = av.borrow().clone();
             focused_tv.grab_focus();
         });
@@ -1101,8 +1206,11 @@ fn build_merge_view(
         let lbl = conflict_label.clone();
         let nav = navigate_conflict;
         let upd = update_conflict_label;
+        let csens = conflict_nav_sensitivity;
         let av = active_view.clone();
         let st = settings.clone();
+        let pcb = prev_conflict_btn.clone();
+        let ncb = next_conflict_btn.clone();
         next_conflict_btn.connect_clicked(move |_| {
             nav(
                 &cur,
@@ -1121,6 +1229,7 @@ fn build_merge_view(
                 st.borrow().wrap_around_navigation,
             );
             upd(&lbl, &mb, cur.get());
+            csens(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
             let focused_tv = av.borrow().clone();
             focused_tv.grab_focus();
         });
@@ -1209,6 +1318,15 @@ fn build_merge_view(
             let lf = left_pane.filler_overlay.clone();
             let mf = middle_pane.filler_overlay.clone();
             let rf = right_pane.filler_overlay.clone();
+            let pb = prev_btn.clone();
+            let nb = next_btn.clone();
+            let pcb = prev_conflict_btn.clone();
+            let ncb = next_conflict_btn.clone();
+            let av = active_view.clone();
+            let ltv = left_pane.text_view.clone();
+            let rtv = right_pane.text_view.clone();
+            let mtv = middle_pane.text_view.clone();
+            let st = settings.clone();
             move || {
                 let lg = lg.clone();
                 let rg = rg.clone();
@@ -1224,6 +1342,15 @@ fn build_merge_view(
                 let lf = lf.clone();
                 let mf = mf.clone();
                 let rf = rf.clone();
+                let pb = pb.clone();
+                let nb = nb.clone();
+                let pcb = pcb.clone();
+                let ncb = ncb.clone();
+                let av = av.clone();
+                let ltv = ltv.clone();
+                let rtv = rtv.clone();
+                let mtv = mtv.clone();
+                let st = st.clone();
                 move || {
                     lg.queue_draw();
                     rg.queue_draw();
@@ -1234,6 +1361,16 @@ fn build_merge_view(
                     rf.queue_draw();
                     cur.set(None);
                     update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), None);
+                    merge_nav_sensitivity(
+                        &pb,
+                        &nb,
+                        &lch.borrow(),
+                        &rch.borrow(),
+                        &av.borrow(),
+                        &ltv,
+                        &rtv,
+                        st.borrow().wrap_around_navigation,
+                    );
                     ccur.set(None);
                     let n = find_conflict_markers(&mb).len();
                     if n == 0 {
@@ -1241,6 +1378,13 @@ fn build_merge_view(
                     } else {
                         clbl.set_label(&format!("{n} conflicts"));
                     }
+                    conflict_nav_sensitivity(
+                        &pcb,
+                        &ncb,
+                        &mb,
+                        &mtv,
+                        st.borrow().wrap_around_navigation,
+                    );
                 }
             }
         };
@@ -1647,6 +1791,8 @@ fn build_merge_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
@@ -1669,6 +1815,16 @@ fn build_merge_view(
                 st.borrow().wrap_around_navigation,
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            merge_nav_sensitivity(
+                &pb,
+                &nb,
+                &lch.borrow(),
+                &rch.borrow(),
+                &av.borrow(),
+                &ltv,
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
         });
         action_group.add_action(&action);
     }
@@ -1692,6 +1848,8 @@ fn build_merge_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
@@ -1714,6 +1872,16 @@ fn build_merge_view(
                 st.borrow().wrap_around_navigation,
             );
             update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
+            merge_nav_sensitivity(
+                &pb,
+                &nb,
+                &lch.borrow(),
+                &rch.borrow(),
+                &av.borrow(),
+                &ltv,
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
         });
         action_group.add_action(&action);
     }
@@ -1733,6 +1901,8 @@ fn build_merge_view(
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
         let st = settings.clone();
+        let pcb = prev_conflict_btn.clone();
+        let ncb = next_conflict_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
                 &cur,
@@ -1751,6 +1921,7 @@ fn build_merge_view(
                 st.borrow().wrap_around_navigation,
             );
             update_conflict_label(&lbl, &mb, cur.get());
+            conflict_nav_sensitivity(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
         });
         action_group.add_action(&action);
     }
@@ -1770,6 +1941,8 @@ fn build_merge_view(
         let rch = right_chunks.clone();
         let lbl = conflict_label.clone();
         let st = settings.clone();
+        let pcb = prev_conflict_btn.clone();
+        let ncb = next_conflict_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
                 &cur,
@@ -1788,6 +1961,7 @@ fn build_merge_view(
                 st.borrow().wrap_around_navigation,
             );
             update_conflict_label(&lbl, &mb, cur.get());
+            conflict_nav_sensitivity(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
         });
         action_group.add_action(&action);
     }

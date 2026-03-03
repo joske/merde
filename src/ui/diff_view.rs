@@ -393,10 +393,11 @@ pub(super) fn build_diff_view(
     toolbar.append(&undo_redo_box);
     let swap_btn = Button::from_icon_name("object-flip-horizontal-symbolic");
     swap_btn.set_tooltip_text(Some("Swap panes"));
+    // Nav buttons start insensitive (chunks empty until async diff completes)
+    prev_btn.set_sensitive(false);
+    next_btn.set_sensitive(false);
     if any_binary {
         swap_btn.set_sensitive(false);
-        prev_btn.set_sensitive(false);
-        next_btn.set_sensitive(false);
         undo_btn.set_sensitive(false);
         redo_btn.set_sensitive(false);
     }
@@ -486,6 +487,8 @@ pub(super) fn build_diff_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         prev_btn.connect_clicked(move |_| {
             navigate_chunk(
                 &ch.borrow(),
@@ -501,6 +504,14 @@ pub(super) fn build_diff_view(
                 st.borrow().wrap_around_navigation,
             );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
+            update_chunk_nav_sensitivity(
+                &pb,
+                &nb,
+                &ch.borrow(),
+                &av.borrow(),
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
             lf.queue_draw();
             rf.queue_draw();
             let focused_tv = av.borrow().clone();
@@ -523,6 +534,8 @@ pub(super) fn build_diff_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         next_btn.connect_clicked(move |_| {
             navigate_chunk(
                 &ch.borrow(),
@@ -538,6 +551,14 @@ pub(super) fn build_diff_view(
                 st.borrow().wrap_around_navigation,
             );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
+            update_chunk_nav_sensitivity(
+                &pb,
+                &nb,
+                &ch.borrow(),
+                &av.borrow(),
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
             lf.queue_draw();
             rf.queue_draw();
             let focused_tv = av.borrow().clone();
@@ -635,6 +656,11 @@ pub(super) fn build_diff_view(
             let lf = left_pane.filler_overlay.clone();
             let rf = right_pane.filler_overlay.clone();
             let ibars = identical_bars.clone();
+            let pb = prev_btn.clone();
+            let nb = next_btn.clone();
+            let av = active_view.clone();
+            let r_tv = right_pane.text_view.clone();
+            let st = settings.clone();
             move || {
                 let g = g.clone();
                 let lcm = lcm.clone();
@@ -645,6 +671,11 @@ pub(super) fn build_diff_view(
                 let lf = lf.clone();
                 let rf = rf.clone();
                 let ibars = ibars.clone();
+                let pb = pb.clone();
+                let nb = nb.clone();
+                let av = av.clone();
+                let r_tv = r_tv.clone();
+                let st = st.clone();
                 move || {
                     g.queue_draw();
                     lcm.queue_draw();
@@ -653,6 +684,14 @@ pub(super) fn build_diff_view(
                     rf.queue_draw();
                     cur.set(None);
                     update_chunk_label(&lbl, &ch.borrow(), None);
+                    update_chunk_nav_sensitivity(
+                        &pb,
+                        &nb,
+                        &ch.borrow(),
+                        &av.borrow(),
+                        &r_tv,
+                        st.borrow().wrap_around_navigation,
+                    );
                     let is_identical = ch.borrow().is_empty();
                     for bar in &ibars {
                         bar.set_visible(is_identical);
@@ -1016,6 +1055,8 @@ pub(super) fn build_diff_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_chunk(
                 &ch.borrow(),
@@ -1031,6 +1072,14 @@ pub(super) fn build_diff_view(
                 st.borrow().wrap_around_navigation,
             );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
+            update_chunk_nav_sensitivity(
+                &pb,
+                &nb,
+                &ch.borrow(),
+                &av.borrow(),
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
             lf.queue_draw();
             rf.queue_draw();
         });
@@ -1051,6 +1100,8 @@ pub(super) fn build_diff_view(
         let rf = right_pane.filler_overlay.clone();
         let av = active_view.clone();
         let st = settings.clone();
+        let pb = prev_btn.clone();
+        let nb = next_btn.clone();
         action.connect_activate(move |_, _| {
             navigate_chunk(
                 &ch.borrow(),
@@ -1066,6 +1117,14 @@ pub(super) fn build_diff_view(
                 st.borrow().wrap_around_navigation,
             );
             update_chunk_label(&lbl, &ch.borrow(), cur.get());
+            update_chunk_nav_sensitivity(
+                &pb,
+                &nb,
+                &ch.borrow(),
+                &av.borrow(),
+                &rtv,
+                st.borrow().wrap_around_navigation,
+            );
             lf.queue_draw();
             rf.queue_draw();
         });

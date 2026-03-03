@@ -1587,6 +1587,26 @@ pub(super) fn update_chunk_label(label: &Label, chunks: &[DiffChunk], current: O
     label.set_label(&diff_state::format_chunk_label(chunks, current));
 }
 
+/// Update sensitivity of prev/next chunk nav buttons based on cursor position.
+pub(super) fn update_chunk_nav_sensitivity(
+    prev_btn: &Button,
+    next_btn: &Button,
+    chunks: &[DiffChunk],
+    active_tv: &TextView,
+    right_tv: &TextView,
+    wrap: bool,
+) {
+    let cursor_line = cursor_line_from_view(active_tv);
+    let side = if active_tv == right_tv {
+        Side::B
+    } else {
+        Side::A
+    };
+    let (prev, next) = diff_state::chunk_nav_sensitivity(chunks, cursor_line, side, wrap);
+    prev_btn.set_sensitive(prev);
+    next_btn.set_sensitive(next);
+}
+
 // ─── Scroll synchronization ───────────────────────────────────────────────
 
 pub(super) fn setup_scroll_sync(

@@ -100,6 +100,31 @@ pub(super) fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -
     }
 }
 
+/// Determine whether prev/next chunk navigation buttons should be sensitive.
+///
+/// Returns `(prev_sensitive, next_sensitive)`.
+/// - If there are no non-Equal chunks → `(false, false)`.
+/// - If `wrap` is true → `(true, true)`.
+/// - Otherwise probes backward/forward from `cursor_line`.
+#[must_use]
+pub(super) fn chunk_nav_sensitivity(
+    chunks: &[DiffChunk],
+    cursor_line: usize,
+    side: Side,
+    wrap: bool,
+) -> (bool, bool) {
+    let has_non_equal = chunks.iter().any(|c| c.tag != DiffTag::Equal);
+    if !has_non_equal {
+        return (false, false);
+    }
+    if wrap {
+        return (true, true);
+    }
+    let prev = find_next_chunk(chunks, cursor_line, -1, side, false).is_some();
+    let next = find_next_chunk(chunks, cursor_line, 1, side, false).is_some();
+    (prev, next)
+}
+
 /// Case-insensitive substring search returning `(byte_start, byte_end)` pairs.
 ///
 /// Allows overlapping matches (advances by 1 byte after each match).
@@ -340,6 +365,85 @@ mod tests {
         assert_eq!(find_next_chunk(&chunks, 3, 1, Side::A, true), Some(1));
         // Cursor exactly at start_a of the change (line 3), backward -> wraps (3 is NOT < 3)
         assert_eq!(find_next_chunk(&chunks, 3, -1, Side::A, true), Some(1));
+    }
+
+    // ── chunk_nav_sensitivity ─────────────────────────────────────────
+
+    #[test]
+    fn sensitivity_no_chunks() {
+        assert_eq!(
+            chunk_nav_sensitivity(&[], 0, Side::A, false),
+            (false, false)
+        );
+        assert_eq!(chunk_nav_sensitivity(&[], 0, Side::A, true), (false, false));
+    }
+
+    #[test]
+    fn sensitivity_all_equal() {
+        let chunks = [eq(0, 5, 0, 5), eq(5, 10, 5, 10)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 0, Side::A, false),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn sensitivity_wrap_always_true() {
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 0, Side::A, true),
+            (true, true)
+        );
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 99, Side::A, true),
+            (true, true)
+        );
+    }
+
+    #[test]
+    fn sensitivity_at_first_chunk() {
+        // Cursor at the start of the only change — no prev, no next (start is not > or <)
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 3, Side::A, false),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn sensitivity_before_change() {
+        // Cursor before the change — prev=false, next=true
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 0, Side::A, false),
+            (false, true)
+        );
+    }
+
+    #[test]
+    fn sensitivity_after_change() {
+        // Cursor after the change — prev=true, next=false
+        let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 7, Side::A, false),
+            (true, false)
+        );
+    }
+
+    #[test]
+    fn sensitivity_between_changes() {
+        // Multiple changes, cursor between them — both true
+        let chunks = [
+            eq(0, 2, 0, 2),
+            del(2, 4, 2, 2),
+            eq(4, 6, 2, 4),
+            ins(6, 6, 4, 7),
+            eq(6, 10, 7, 11),
+        ];
+        assert_eq!(
+            chunk_nav_sensitivity(&chunks, 5, Side::A, false),
+            (true, true)
+        );
     }
 
     // ── format_chunk_label ──────────────────────────────────────────────
