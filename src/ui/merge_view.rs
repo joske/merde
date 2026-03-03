@@ -166,6 +166,12 @@ fn find_conflict_markers(buf: &TextBuffer) -> Vec<usize> {
     super::merge_state::find_conflict_markers_in_text(&text)
 }
 
+/// Find the opening `<<<<<<<` marker line for the conflict block at `cursor_line`.
+fn conflict_at_cursor(buf: &TextBuffer, cursor_line: usize) -> Option<usize> {
+    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+    super::merge_state::conflict_at_cursor(&text, cursor_line)
+}
+
 fn build_merge_view(
     left_path: &Path,
     middle_path: &Path,
@@ -1624,11 +1630,10 @@ fn build_merge_view(
                     wrap,
                 );
 
-                // Conflict: check if cursor is on a marker line
-                let markers = find_conflict_markers(&mb);
-                let on_marker = markers.iter().find(|&&l| l == cursor_line).copied();
-                ccur.set(on_marker);
-                update_conflict_label(&clbl, &mb, on_marker);
+                // Conflict: check if cursor is inside a conflict block
+                let in_conflict = conflict_at_cursor(&mb, cursor_line);
+                ccur.set(in_conflict);
+                update_conflict_label(&clbl, &mb, in_conflict);
                 csens(&pcb, &ncb, &mb, &mtv, wrap);
             });
         }
