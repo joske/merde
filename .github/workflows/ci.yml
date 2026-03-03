@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install additional packages
-        run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev
+        run: sudo apt-get update && sudo apt-get install -y build-essential libgtksourceview-5-dev xvfb fonts-dejavu-core
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -24,4 +24,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings -W clippy::pedantic
       - name: Run tests
-        run: cargo test --all-targets --locked
+        run: xvfb-run -a cargo test --all-targets --locked
+        env:
+          GDK_BACKEND: x11
+          GTK_A11Y: none
