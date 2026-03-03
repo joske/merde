@@ -1,13 +1,10 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-// ─── Data types ────────────────────────────────────────────────────────────
+use super::diff_state;
+pub(super) use diff_state::Side;
 
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum Side {
-    A,
-    B,
-}
+// ─── Data types ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) enum FileStatus {
@@ -1380,30 +1377,30 @@ pub(super) fn handle_gutter_click(
         let left_mid = f64::midpoint(lt, lb);
         let right_mid = f64::midpoint(rt, rb);
 
-        let hit = 12.0_f64;
-        // → arrow at left edge: copy left to right
-        if (x - 2.0).powi(2) + (y - left_mid).powi(2) < hit * hit {
-            copy_chunk(
-                left_buf,
-                chunk.start_a,
-                chunk.end_a,
-                right_buf,
-                chunk.start_b,
-                chunk.end_b,
-            );
-            return;
-        }
-        // ← arrow at right edge: copy right to left
-        if (x - (width - 2.0)).powi(2) + (y - right_mid).powi(2) < hit * hit {
-            copy_chunk(
-                right_buf,
-                chunk.start_b,
-                chunk.end_b,
-                left_buf,
-                chunk.start_a,
-                chunk.end_a,
-            );
-            return;
+        match diff_state::hit_test_gutter_arrow(x, y, width, left_mid, right_mid) {
+            Some(diff_state::GutterHit::CopyLeftToRight) => {
+                copy_chunk(
+                    left_buf,
+                    chunk.start_a,
+                    chunk.end_a,
+                    right_buf,
+                    chunk.start_b,
+                    chunk.end_b,
+                );
+                return;
+            }
+            Some(diff_state::GutterHit::CopyRightToLeft) => {
+                copy_chunk(
+                    right_buf,
+                    chunk.start_b,
+                    chunk.end_b,
+                    left_buf,
+                    chunk.start_a,
+                    chunk.end_a,
+                );
+                return;
+            }
+            None => {}
         }
     }
 }
@@ -1483,31 +1480,16 @@ pub(super) fn draw_chunk_map(
     if total_lines <= 0 || height <= 0.0 {
         return;
     }
-    let lines = total_lines as f64;
 
-    for chunk in chunks {
-        if chunk.tag == DiffTag::Equal {
-            continue;
-        }
-
-        let (start, end) = if is_left {
-            (chunk.start_a, chunk.end_a)
-        } else {
-            (chunk.start_b, chunk.end_b)
-        };
-
-        let y_start = (start as f64 / lines) * height;
-        let y_end = (end as f64 / lines) * height;
-        let rect_h = (y_end - y_start).max(2.0);
-
-        let (r, g, b) = match chunk.tag {
+    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, is_left)
+    {
+        let (r, g, b) = match rect.tag {
             DiffTag::Replace => BAND_REPLACE,
             DiffTag::Delete | DiffTag::Insert => BAND_INSERT,
             DiffTag::Equal => continue,
         };
-
         cr.set_source_rgba(r, g, b, 0.7);
-        cr.rectangle(1.0, y_start, 10.0, rect_h);
+        cr.rectangle(1.0, rect.y_start, 10.0, rect.height);
         let _ = cr.fill();
     }
 
@@ -1533,36 +1515,6 @@ pub(super) fn count_changes(chunks: &[DiffChunk]) -> usize {
     chunks.iter().filter(|c| c.tag != DiffTag::Equal).count()
 }
 
-/// Find the next/previous chunk relative to `cursor_line`.
-/// `side` selects whether to compare against side-A or side-B line numbers.
-fn chunk_near_cursor<'a>(
-    non_equal: &'a [usize],
-    chunks: &[DiffChunk],
-    cursor_line: usize,
-    direction: i32,
-    side: Side,
-) -> Option<&'a usize> {
-    let start_line = |i: usize| -> usize {
-        if side == Side::A {
-            chunks[i].start_a
-        } else {
-            chunks[i].start_b
-        }
-    };
-    if direction > 0 {
-        non_equal
-            .iter()
-            .find(|&&i| start_line(i) > cursor_line)
-            .or(non_equal.first())
-    } else {
-        non_equal
-            .iter()
-            .rev()
-            .find(|&&i| start_line(i) < cursor_line)
-            .or(non_equal.last())
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn navigate_chunk(
     chunks: &[DiffChunk],
@@ -1576,26 +1528,14 @@ pub(super) fn navigate_chunk(
     right_scroll: &ScrolledWindow,
     active_tv: &TextView,
 ) {
-    let non_equal: Vec<usize> = chunks
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.tag != DiffTag::Equal)
-        .map(|(i, _)| i)
-        .collect();
-
-    if non_equal.is_empty() {
-        return;
-    }
-
     let cursor_line = cursor_line_from_view(active_tv);
     let side = if active_tv == right_tv {
         Side::B
     } else {
         Side::A
     };
-    let next_idx = chunk_near_cursor(&non_equal, chunks, cursor_line, direction, side);
 
-    if let Some(&idx) = next_idx {
+    if let Some(idx) = diff_state::find_next_chunk(chunks, cursor_line, direction, side) {
         current_chunk.set(Some(idx));
         let chunk = &chunks[idx];
         scroll_to_line(left_tv, left_buf, chunk.start_a, left_scroll);
@@ -1643,27 +1583,7 @@ pub(super) fn scroll_to_line(
 }
 
 pub(super) fn update_chunk_label(label: &Label, chunks: &[DiffChunk], current: Option<usize>) {
-    let total = count_changes(chunks);
-    if total == 0 {
-        label.set_label("No changes");
-        return;
-    }
-    let non_equal: Vec<usize> = chunks
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| c.tag != DiffTag::Equal)
-        .map(|(i, _)| i)
-        .collect();
-    match current {
-        Some(cur) => {
-            if let Some(pos) = non_equal.iter().position(|&i| i == cur) {
-                label.set_label(&format!("Change {} of {}", pos + 1, total));
-            } else {
-                label.set_label(&format!("{total} changes"));
-            }
-        }
-        None => label.set_label(&format!("{total} changes")),
-    }
+    label.set_label(&diff_state::format_chunk_label(chunks, current));
 }
 
 // ─── Scroll synchronization ───────────────────────────────────────────────

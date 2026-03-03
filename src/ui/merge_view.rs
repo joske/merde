@@ -157,39 +157,13 @@ fn merge_change_indices(
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
 ) -> Vec<(usize, bool)> {
-    let mut indices: Vec<(usize, bool, usize)> = Vec::new();
-    for (i, c) in left_chunks.iter().enumerate() {
-        if c.tag != DiffTag::Equal {
-            // In left diff, middle lines = start_b
-            indices.push((i, false, c.start_b));
-        }
-    }
-    for (i, c) in right_chunks.iter().enumerate() {
-        if c.tag != DiffTag::Equal {
-            // In right diff, middle lines = start_a
-            indices.push((i, true, c.start_a));
-        }
-    }
-    indices.sort_by_key(|&(_, _, line)| line);
-    indices
-        .into_iter()
-        .map(|(i, is_right, _)| (i, is_right))
-        .collect()
+    super::merge_state::merge_change_indices(left_chunks, right_chunks)
 }
 
 /// Find line numbers of `<<<<<<<` conflict markers in a buffer.
 fn find_conflict_markers(buf: &TextBuffer) -> Vec<usize> {
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-    text.lines()
-        .enumerate()
-        .filter_map(|(i, line)| {
-            if line.starts_with("<<<<<<<") {
-                Some(i)
-            } else {
-                None
-            }
-        })
-        .collect()
+    super::merge_state::find_conflict_markers_in_text(&text)
 }
 
 fn build_merge_view(
@@ -2104,77 +2078,4 @@ pub(super) fn build_merge_window(
     window.present();
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── merge_change_indices ─────────────────────────────────────
-
-    #[test]
-    fn merge_change_indices_empty() {
-        let result = merge_change_indices(&[], &[]);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn merge_change_indices_only_equal() {
-        let left = vec![DiffChunk {
-            tag: DiffTag::Equal,
-            start_a: 0,
-            end_a: 5,
-            start_b: 0,
-            end_b: 5,
-        }];
-        let right = left.clone();
-        let result = merge_change_indices(&left, &right);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn merge_change_indices_left_only() {
-        let left = vec![
-            DiffChunk {
-                tag: DiffTag::Equal,
-                start_a: 0,
-                end_a: 2,
-                start_b: 0,
-                end_b: 2,
-            },
-            DiffChunk {
-                tag: DiffTag::Replace,
-                start_a: 2,
-                end_a: 4,
-                start_b: 2,
-                end_b: 4,
-            },
-        ];
-        let right: Vec<DiffChunk> = vec![];
-        let result = merge_change_indices(&left, &right);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0], (1, false)); // index 1 in left, is_right=false
-    }
-
-    #[test]
-    fn merge_change_indices_sorted_by_middle_line() {
-        let left = vec![DiffChunk {
-            tag: DiffTag::Replace,
-            start_a: 0,
-            end_a: 2,
-            start_b: 10, // middle line 10
-            end_b: 12,
-        }];
-        let right = vec![DiffChunk {
-            tag: DiffTag::Insert,
-            start_a: 5, // middle line 5
-            end_a: 5,
-            start_b: 0,
-            end_b: 2,
-        }];
-        let result = merge_change_indices(&left, &right);
-        assert_eq!(result.len(), 2);
-        // Right chunk (middle line 5) should come first
-        assert_eq!(result[0], (0, true));
-        // Left chunk (middle line 10) should come second
-        assert_eq!(result[1], (0, false));
-    }
-}
+// Tests for merge_change_indices and find_conflict_markers are in merge_state.rs

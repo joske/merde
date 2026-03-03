@@ -103,7 +103,10 @@ pub(super) fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -
 ///
 /// Allows overlapping matches (advances by 1 byte after each match).
 /// Returns an empty vec if `needle` is empty.
+/// Note: currently tested but not wired into GTK code (which uses `TextIter` search).
+/// Kept as a pure-logic utility for potential future use and for testing coverage.
 #[must_use]
+#[allow(dead_code)]
 pub(super) fn find_all_matches(text: &str, needle: &str) -> Vec<(usize, usize)> {
     if needle.is_empty() {
         return Vec::new();
