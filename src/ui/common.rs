@@ -2116,4 +2116,109 @@ mod tests {
         ];
         assert_eq!(count_changes(&chunks), 3);
     }
+
+    // ── generate_unified_diff ─────────────────────────────────────
+
+    #[test]
+    fn unified_diff_basic() {
+        let left = "line1\nline2\nline3\n";
+        let right = "line1\nchanged\nline3\n";
+        let chunks = crate::myers::diff_lines(left, right);
+        let patch = generate_unified_diff("a.txt", "b.txt", left, right, &chunks);
+        assert!(patch.starts_with("--- a.txt\n"));
+        assert!(patch.contains("+++ b.txt\n"));
+        assert!(patch.contains("@@ "));
+        assert!(patch.contains("-line2"));
+        assert!(patch.contains("+changed"));
+    }
+
+    #[test]
+    fn unified_diff_identical() {
+        let text = "same\n";
+        let chunks = crate::myers::diff_lines(text, text);
+        let patch = generate_unified_diff("a", "b", text, text, &chunks);
+        assert!(patch.starts_with("--- a\n+++ b\n"));
+        assert!(
+            !patch.contains("@@ "),
+            "identical files should have no hunks"
+        );
+    }
+
+    #[test]
+    fn unified_diff_empty_to_content() {
+        let chunks = crate::myers::diff_lines("", "new\n");
+        let patch = generate_unified_diff("a", "b", "", "new\n", &chunks);
+        assert!(patch.contains("+new"));
+    }
+
+    #[test]
+    fn unified_diff_content_to_empty() {
+        let chunks = crate::myers::diff_lines("old\n", "");
+        let patch = generate_unified_diff("a", "b", "old\n", "", &chunks);
+        assert!(patch.contains("-old"));
+    }
+
+    #[test]
+    fn unified_diff_multi_hunk() {
+        // Two changes far apart should produce two separate @@ hunks
+        let mut left_lines: Vec<&str> = Vec::new();
+        let mut right_lines: Vec<&str> = Vec::new();
+        for i in 0..20 {
+            if i == 2 {
+                left_lines.push("old_a");
+                right_lines.push("new_a");
+            } else if i == 18 {
+                left_lines.push("old_b");
+                right_lines.push("new_b");
+            } else {
+                left_lines.push("same");
+                right_lines.push("same");
+            }
+        }
+        let left = left_lines.join("\n") + "\n";
+        let right = right_lines.join("\n") + "\n";
+        let chunks = crate::myers::diff_lines(&left, &right);
+        let patch = generate_unified_diff("a", "b", &left, &right, &chunks);
+        let hunk_count = patch.lines().filter(|l| l.starts_with("@@ ")).count();
+        assert!(hunk_count >= 2, "expected 2+ hunks, got {hunk_count}");
+    }
+
+    // ── read_file_content ─────────────────────────────────────────
+
+    #[test]
+    fn read_file_content_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("text.txt");
+        std::fs::write(&p, "hello\nworld\n").unwrap();
+        let (content, is_binary) = read_file_content(&p);
+        assert_eq!(content, "hello\nworld\n");
+        assert!(!is_binary);
+    }
+
+    #[test]
+    fn read_file_content_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bin");
+        std::fs::write(&p, b"hello\x00world").unwrap();
+        let (content, is_binary) = read_file_content(&p);
+        assert!(is_binary);
+        assert!(content.is_empty());
+    }
+
+    #[test]
+    fn read_file_content_nonexistent() {
+        let (content, is_binary) = read_file_content(std::path::Path::new("/nonexistent/path"));
+        assert!(content.is_empty());
+        assert!(!is_binary);
+    }
+
+    #[test]
+    fn read_file_content_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("empty");
+        std::fs::write(&p, "").unwrap();
+        let (content, is_binary) = read_file_content(&p);
+        assert!(content.is_empty());
+        assert!(!is_binary);
+    }
 }
