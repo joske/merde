@@ -31,7 +31,9 @@ jobs:
         run: cargo build --release
 
       - name: Install Python dependencies
-        run: pip3 install -r tests/ui_integration/requirements.txt
+        run: |
+          python3 -m venv tests/ui_integration/.venv
+          tests/ui_integration/.venv/bin/pip install -r tests/ui_integration/requirements.txt
 
       - name: Run Rust tests under Xvfb
         env:
@@ -46,4 +48,4 @@ jobs:
           eval $(dbus-launch --sh-syntax)
           /usr/libexec/at-spi2-registryd &
           sleep 1
-          xvfb-run -a python3 -m pytest tests/ui_integration/ -v --tb=long
+          xvfb-run -a tests/ui_integration/.venv/bin/python3 -m pytest tests/ui_integration/ -v --tb=long

@@ -11,6 +11,7 @@ target/
 # Environment
 .env
 .env.*
+.venv/
 
 # OS
 .DS_Store
