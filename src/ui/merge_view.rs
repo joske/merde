@@ -185,6 +185,9 @@ fn build_merge_view(
     left_buf.set_text(&left_content);
     middle_buf.set_text(&middle_content);
     right_buf.set_text(&right_content);
+    left_buf.place_cursor(&left_buf.start_iter());
+    middle_buf.place_cursor(&middle_buf.start_iter());
+    right_buf.place_cursor(&right_buf.start_iter());
 
     let left_identical = !any_binary && left_content == middle_content;
     let right_identical = !any_binary && middle_content == right_content;
