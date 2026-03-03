@@ -1,5 +1,6 @@
 """Keyboard shortcut tests for file diff window via dogtail AT-SPI."""
-import dogtail.rawinput
+import subprocess
+
 from dogtail.utils import doDelay
 
 from conftest import find_app
@@ -11,11 +12,24 @@ def _open_diff(app_process, fixture_path):
     return find_app()
 
 
+def _send_keys(key_combo):
+    """Send a key combo to the mergers window via xdotool.
+
+    Uses xdotool window search + key targeting to avoid terminal escape
+    sequence leakage that dogtail.rawinput.keyCombo suffers from.
+    """
+    wids = subprocess.check_output(
+        ["xdotool", "search", "--name", "mergers"]
+    ).decode().strip().splitlines()
+    assert wids, "No mergers window found via xdotool"
+    subprocess.run(["xdotool", "key", "--window", wids[0], key_combo], check=True)
+
+
 def test_ctrl_f_opens_find_bar(app_process, fixture_path):
     """Ctrl+F should reveal the find bar with a text entry."""
     app = _open_diff(app_process, fixture_path)
 
-    dogtail.rawinput.keyCombo("<Control>f")
+    _send_keys("ctrl+f")
     doDelay(1)
 
     entries = app.findChildren(
@@ -24,26 +38,13 @@ def test_ctrl_f_opens_find_bar(app_process, fixture_path):
     assert len(entries) >= 1, "No text entry found after Ctrl+F"
 
 
-def test_next_chunk_navigation(app_process, fixture_path):
-    """Clicking 'Next change' button should update the chunk label."""
+def test_alt_down_navigates_to_next_chunk(app_process, fixture_path):
+    """Alt+Down should navigate to the next diff chunk."""
     app = _open_diff(app_process, fixture_path)
 
-    # Find and click the "Next change" button
-    buttons = app.findChildren(lambda n: n.roleName == "push button")
-    next_btn = None
-    for btn in buttons:
-        if "Next change" in (btn.name or ""):
-            next_btn = btn
-            break
-
-    assert next_btn is not None, (
-        f"Next change button not found. Buttons: {[b.name for b in buttons]}"
-    )
-
-    next_btn.click()
+    _send_keys("alt+Down")
     doDelay(1)
 
-    # After navigating, the chunk label should show "Change 1 of N"
     labels = app.findChildren(
         lambda n: n.roleName == "label" and n.showing
     )
@@ -58,7 +59,7 @@ def test_next_chunk_navigation(app_process, fixture_path):
             continue
 
     assert chunk_label is not None, (
-        "Chunk navigation label not found after clicking Next. "
+        "Chunk navigation label not found after Alt+Down. "
         f"Labels found: {[getattr(l, 'name', '') for l in labels]}"
     )
     assert "1 of " in (chunk_label.text or chunk_label.name), (
@@ -70,8 +71,7 @@ def test_escape_closes_find_bar(app_process, fixture_path):
     """Escape should close the find bar after Ctrl+F opens it."""
     app = _open_diff(app_process, fixture_path)
 
-    # Open find bar
-    dogtail.rawinput.keyCombo("<Control>f")
+    _send_keys("ctrl+f")
     doDelay(1)
 
     entries_before = app.findChildren(
@@ -79,6 +79,5 @@ def test_escape_closes_find_bar(app_process, fixture_path):
     )
     assert len(entries_before) >= 1, "Find bar did not open"
 
-    # Press Escape to close it
-    dogtail.rawinput.pressKey("Escape")
+    _send_keys("Escape")
     doDelay(1)
