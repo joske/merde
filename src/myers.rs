@@ -81,6 +81,7 @@ pub fn diff<T: Eq + Hash>(a: &[T], b: &[T]) -> Vec<DiffChunk> {
 }
 
 /// Convenience: diff two strings line by line.
+#[must_use]
 pub fn diff_lines(a: &str, b: &str) -> Vec<DiffChunk> {
     let a_lines: Vec<&str> = a.lines().collect();
     let b_lines: Vec<&str> = b.lines().collect();
@@ -99,6 +100,11 @@ pub struct Token<'a> {
 /// - Word: run of `char::is_alphanumeric() || '_'`
 /// - Whitespace: run of `char::is_whitespace()`
 /// - Punctuation: each remaining char is its own token
+///
+/// # Panics
+///
+/// Panics if the string contains invalid UTF-8 (not possible for valid `&str`).
+#[must_use]
 pub fn tokenize(s: &str) -> Vec<Token<'_>> {
     let mut tokens = Vec::new();
     let mut i = 0;
@@ -146,6 +152,7 @@ pub fn tokenize(s: &str) -> Vec<Token<'_>> {
 
 /// Word-level diff: tokenize both strings, diff the token texts,
 /// return (tokens a, tokens b, chunks) where chunk indices reference token positions.
+#[must_use]
 pub fn diff_words<'a>(a: &'a str, b: &'a str) -> (Vec<Token<'a>>, Vec<Token<'a>>, Vec<DiffChunk>) {
     let toks_a = tokenize(a);
     let toks_b = tokenize(b);
@@ -1112,5 +1119,73 @@ mod tests {
         }
         assert_eq!(pos_a, len_a, "a not fully covered");
         assert_eq!(pos_b, len_b, "b not fully covered");
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn test_diff_reconstruction(a in any::<Vec<String>>(), b in any::<Vec<String>>()) {
+            let chunks = diff(&a, &b);
+
+            // 1. Reconstruct B from A + Chunks
+            let mut reconstructed_b = Vec::new();
+            for chunk in &chunks {
+                match chunk.tag {
+                    DiffTag::Equal => {
+                        reconstructed_b.extend_from_slice(&a[chunk.start_a..chunk.end_a]);
+                    }
+                    DiffTag::Insert | DiffTag::Replace => {
+                        reconstructed_b.extend_from_slice(&b[chunk.start_b..chunk.end_b]);
+                    }
+                    DiffTag::Delete => {}
+                }
+            }
+            prop_assert_eq!(&reconstructed_b, &b);
+
+            // 2. Reconstruct A from B + Chunks (Inverse)
+            let mut reconstructed_a = Vec::new();
+            for chunk in &chunks {
+                match chunk.tag {
+                    DiffTag::Equal => {
+                        reconstructed_a.extend_from_slice(&b[chunk.start_b..chunk.end_b]);
+                    }
+                    DiffTag::Delete | DiffTag::Replace => {
+                        reconstructed_a.extend_from_slice(&a[chunk.start_a..chunk.end_a]);
+                    }
+                    DiffTag::Insert => {}
+                }
+            }
+            prop_assert_eq!(&reconstructed_a, &a);
+
+            // 3. Verify coverage
+            let mut pos_a = 0;
+            let mut pos_b = 0;
+            for chunk in &chunks {
+                prop_assert_eq!(chunk.start_a, pos_a);
+                prop_assert_eq!(chunk.start_b, pos_b);
+                pos_a = chunk.end_a;
+                pos_b = chunk.end_b;
+            }
+            prop_assert_eq!(pos_a, a.len());
+            prop_assert_eq!(pos_b, b.len());
+        }
+
+        #[test]
+        fn test_diff_identity(a in any::<Vec<String>>()) {
+            let chunks = diff(&a, &a);
+            if a.is_empty() {
+                prop_assert!(chunks.is_empty());
+            } else {
+                prop_assert_eq!(chunks.len(), 1);
+                prop_assert_eq!(chunks[0].tag, DiffTag::Equal);
+                prop_assert_eq!(chunks[0].start_a, 0);
+                prop_assert_eq!(chunks[0].end_a, a.len());
+            }
+        }
     }
 }

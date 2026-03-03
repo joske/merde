@@ -18,6 +18,8 @@ pub struct VcsEntry {
     pub status: VcsStatus,
 }
 
+/// Check if a directory is part of a Git repository.
+#[must_use]
 pub fn is_git_repo(dir: &Path) -> bool {
     Command::new("git")
         .args([
@@ -27,10 +29,11 @@ pub fn is_git_repo(dir: &Path) -> bool {
             "--is-inside-work-tree",
         ])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
-        .unwrap_or(false)
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
 }
 
+/// Find the root of the Git repository containing the directory.
+#[must_use]
 pub fn repo_root(dir: &Path) -> Option<PathBuf> {
     let output = Command::new("git")
         .args(["-C", &dir.to_string_lossy(), "rev-parse", "--show-toplevel"])
@@ -45,6 +48,8 @@ pub fn repo_root(dir: &Path) -> Option<PathBuf> {
     }
 }
 
+/// List files with changes in the repository.
+#[must_use]
 pub fn changed_files(repo_root: &Path) -> Vec<VcsEntry> {
     let output = match Command::new("git")
         .args([
@@ -66,17 +71,24 @@ pub fn changed_files(repo_root: &Path) -> Vec<VcsEntry> {
 /// Parse NUL-delimited `git status --porcelain -z` output into `VcsEntry` items.
 ///
 /// Format: each entry is `XY PATH\0`, except renames which are `XY PATH\0NEWPATH\0`.
+#[must_use]
 pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
-    let text = String::from_utf8_lossy(raw);
     let mut entries = Vec::new();
-    let mut fields = text.split('\0').peekable();
-
-    while let Some(field) = fields.next() {
-        if field.len() < 3 {
+    let mut i = 0;
+    while i < raw.len() {
+        // Find the next NUL
+        let next_nul = raw[i..]
+            .iter()
+            .position(|&b| b == 0)
+            .map_or(raw.len(), |p| i + p);
+        let entry_str = String::from_utf8_lossy(&raw[i..next_nul]);
+        if entry_str.len() < 3 {
+            i = next_nul + 1;
             continue;
         }
-        let xy = &field[..2];
-        let path_part = &field[3..];
+
+        let xy = &entry_str[..2];
+        let path = entry_str[2..].trim_start().to_string();
 
         let status = match xy {
             "??" => VcsStatus::Untracked,
@@ -84,15 +96,25 @@ pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
             _ if xy.starts_with('D') || xy.ends_with('D') => VcsStatus::Deleted,
             _ if xy.starts_with('A') => VcsStatus::Added,
             _ if xy.contains('M') => VcsStatus::Modified,
-            _ => continue,
+            _ => {
+                i = next_nul + 1;
+                continue;
+            }
         };
 
         let rel_path = if status == VcsStatus::Renamed {
-            // With -z, renames emit: "XY old_path\0new_path\0"
-            // Consume the next field as the new path.
-            fields.next().unwrap_or(path_part).to_string()
+            // In -z porcelain, the first path is the NEW path, second is OLD path.
+            let next_start = next_nul + 1;
+            let next_nul2 = raw[next_start..]
+                .iter()
+                .position(|&b| b == 0)
+                .map_or(raw.len(), |p| next_start + p);
+            // Consume the second NUL (old path)
+            i = next_nul2 + 1;
+            path // 'path' here is the first part after XY, which is the NEW path
         } else {
-            path_part.to_string()
+            i = next_nul + 1;
+            path
         };
 
         entries.push(VcsEntry { rel_path, status });
@@ -101,6 +123,8 @@ pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
     entries
 }
 
+/// Get the content of a file at HEAD.
+#[must_use]
 pub fn head_content(repo_root: &Path, rel_path: &str) -> Option<String> {
     let arg = format!("HEAD:{rel_path}");
     let output = Command::new("git")
@@ -114,6 +138,8 @@ pub fn head_content(repo_root: &Path, rel_path: &str) -> Option<String> {
     }
 }
 
+/// Discard local changes to a file.
+#[must_use]
 pub fn discard_changes(repo_root: &Path, rel_path: &str) -> bool {
     Command::new("git")
         .args([
@@ -125,16 +151,16 @@ pub fn discard_changes(repo_root: &Path, rel_path: &str) -> bool {
             rel_path,
         ])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
+/// Stage a file (git add).
+#[must_use]
 pub fn stage_file(repo_root: &Path, rel_path: &str) -> bool {
     Command::new("git")
         .args(["-C", &repo_root.to_string_lossy(), "add", rel_path])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 #[cfg(test)]
@@ -180,8 +206,8 @@ mod tests {
 
     #[test]
     fn test_parse_nul_renamed() {
-        // With -z: "R  old.rs\0new.rs\0"
-        let entries = parse_porcelain_nul(b"R  old.rs\0new.rs\0");
+        // With -z: "R  new.rs\0old.rs\0"
+        let entries = parse_porcelain_nul(b"R  new.rs\0old.rs\0");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, VcsStatus::Renamed);
         assert_eq!(entries[0].rel_path, "new.rs");
@@ -235,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_parse_nul_rename_with_spaces() {
-        let entries = parse_porcelain_nul(b"R  old name.rs\0new name.rs\0");
+        let entries = parse_porcelain_nul(b"R  new name.rs\0old name.rs\0");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].status, VcsStatus::Renamed);
         assert_eq!(entries[0].rel_path, "new name.rs");

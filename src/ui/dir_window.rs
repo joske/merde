@@ -1,44 +1,68 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-// ─── Row encoding ──────────────────────────────────────────────────────────
-// Fields: STATUS \x1f NAME \x1f IS_DIR \x1f REL_PATH \x1f L_SIZE \x1f L_MTIME \x1f R_SIZE \x1f R_MTIME
+// ─── Directory Logic (Pure Functions) ──────────────────────────────────────
 
-#[allow(clippy::too_many_arguments)]
-fn encode_row(
-    status: FileStatus,
-    name: &str,
-    is_dir: bool,
-    rel_path: &str,
-    left_size: Option<u64>,
-    left_mtime: Option<SystemTime>,
-    right_size: Option<u64>,
-    right_mtime: Option<SystemTime>,
-) -> String {
-    let s = status.code();
-    let d = if is_dir { "1" } else { "0" };
-    let ls = left_size.map(format_size).unwrap_or_default();
-    let lm = left_mtime.map(format_mtime).unwrap_or_default();
-    let rs = right_size.map(format_size).unwrap_or_default();
-    let rm = right_mtime.map(format_mtime).unwrap_or_default();
-    format!("{s}{SEP}{name}{SEP}{d}{SEP}{rel_path}{SEP}{ls}{SEP}{lm}{SEP}{rs}{SEP}{rm}")
+#[derive(Debug, Clone, PartialEq)]
+pub struct DirRowInfo {
+    pub status: FileStatus,
+    pub name: String,
+    pub is_dir: bool,
+    pub rel_path: String,
+    pub left_size: Option<u64>,
+    pub left_mtime: Option<SystemTime>,
+    pub right_size: Option<u64>,
+    pub right_mtime: Option<SystemTime>,
 }
 
-fn decode_field(raw: &str, index: usize) -> &str {
-    raw.splitn(8, SEP).nth(index).unwrap_or("")
-}
+impl DirRowInfo {
+    pub fn encode(&self) -> String {
+        let s = self.status.code();
+        let d = if self.is_dir { "1" } else { "0" };
+        let ls = self.left_size.map(format_size).unwrap_or_default();
+        let lm = self.left_mtime.map(format_mtime).unwrap_or_default();
+        let rs = self.right_size.map(format_size).unwrap_or_default();
+        let rm = self.right_mtime.map(format_mtime).unwrap_or_default();
+        format!(
+            "{s}{SEP}{name}{SEP}{d}{SEP}{rel}{SEP}{ls}{SEP}{lm}{SEP}{rs}{SEP}{rm}",
+            name = self.name,
+            rel = self.rel_path
+        )
+    }
 
-fn decode_status(raw: &str) -> &str {
-    decode_field(raw, 0)
-}
-fn decode_name(raw: &str) -> &str {
-    decode_field(raw, 1)
-}
-fn decode_is_dir(raw: &str) -> bool {
-    decode_field(raw, 2) == "1"
-}
-fn decode_rel_path(raw: &str) -> &str {
-    decode_field(raw, 3)
+    pub fn decode(raw: &str) -> Self {
+        let mut parts = raw.splitn(8, SEP);
+        let status_code = parts.next().unwrap_or("S");
+        let name = parts.next().unwrap_or("").to_string();
+        let is_dir = parts.next().unwrap_or("0") == "1";
+        let rel_path = parts.next().unwrap_or("").to_string();
+        // Skip metadata decoding for now as it's string-formatted;
+        // in a real app we might want to store raw values or just use strings for display.
+        // For this refactor, we primarily need the identity fields.
+
+        let status = match status_code {
+            "D" => FileStatus::Different,
+            "L" => FileStatus::LeftOnly,
+            "R" => FileStatus::RightOnly,
+            _ => FileStatus::Same,
+        };
+
+        DirRowInfo {
+            status,
+            name,
+            is_dir,
+            rel_path,
+            left_size: None, // Decoding metadata from formatted string is lossy/complex
+            left_mtime: None,
+            right_size: None,
+            right_mtime: None,
+        }
+    }
+
+    // Helper to get just the field text for display
+    pub fn get_field_text(raw: &str, index: usize) -> &str {
+        raw.splitn(8, SEP).nth(index).unwrap_or("")
+    }
 }
 
 // ─── Directory copy helper ──────────────────────────────────────────────────
@@ -71,7 +95,11 @@ fn copy_path_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 // ─── Directory scanning ────────────────────────────────────────────────────
 
-fn read_dir_entries(dir: &Path, dir_filters: &[String]) -> BTreeMap<String, DirMeta> {
+fn read_dir_entries(
+    dir: &Path,
+    dir_filters: &[String],
+    hide_hidden: bool,
+) -> BTreeMap<String, DirMeta> {
     let mut map = BTreeMap::new();
     if let Ok(rd) = fs::read_dir(dir) {
         for entry in rd.filter_map(Result::ok) {
@@ -79,6 +107,9 @@ fn read_dir_entries(dir: &Path, dir_filters: &[String]) -> BTreeMap<String, DirM
                 continue;
             };
             if dir_filters.iter().any(|f| f == &name) {
+                continue;
+            }
+            if hide_hidden && name.starts_with('.') {
                 continue;
             }
             let meta = entry.metadata().ok();
@@ -119,6 +150,7 @@ fn scan_tree(
     right_root: &Path,
     rel: &str,
     dir_filters: &[String],
+    hide_hidden: bool,
 ) -> (Vec<ScanEntry>, FileStatus) {
     let left_dir = if rel.is_empty() {
         left_root.to_path_buf()
@@ -131,8 +163,8 @@ fn scan_tree(
         right_root.join(rel)
     };
 
-    let left_entries = read_dir_entries(&left_dir, dir_filters);
-    let right_entries = read_dir_entries(&right_dir, dir_filters);
+    let left_entries = read_dir_entries(&left_dir, dir_filters, hide_hidden);
+    let right_entries = read_dir_entries(&right_dir, dir_filters, hide_hidden);
     let all: BTreeSet<&String> = left_entries.keys().chain(right_entries.keys()).collect();
 
     // Sort: directories first, then files, alphabetically within each group
@@ -161,7 +193,7 @@ fn scan_tree(
         let (status, children);
         if *is_dir {
             let (child_entries, child_agg) =
-                scan_tree(left_root, right_root, &child_rel, dir_filters);
+                scan_tree(left_root, right_root, &child_rel, dir_filters, hide_hidden);
             status = if !in_left {
                 FileStatus::RightOnly
             } else if !in_right {
@@ -230,17 +262,17 @@ fn build_stores(entries: &[ScanEntry], children_map: &mut HashMap<String, ListSt
             let child_store = build_stores(&entry.children, children_map);
             children_map.insert(entry.rel_path.clone(), child_store);
         }
-        let row = encode_row(
-            entry.status,
-            &entry.name,
-            entry.is_dir,
-            &entry.rel_path,
-            entry.left_size,
-            entry.left_mtime,
-            entry.right_size,
-            entry.right_mtime,
-        );
-        store.append(&StringObject::new(&row));
+        let info = DirRowInfo {
+            status: entry.status,
+            name: entry.name.clone(),
+            is_dir: entry.is_dir,
+            rel_path: entry.rel_path.clone(),
+            left_size: entry.left_size,
+            left_mtime: entry.left_mtime,
+            right_size: entry.right_size,
+            right_mtime: entry.right_mtime,
+        };
+        store.append(&StringObject::new(&info.encode()));
     }
     store
 }
@@ -306,17 +338,15 @@ fn make_name_factory(is_left: bool) -> SignalListItemFactory {
         let icon = hbox.first_child().and_downcast::<Image>().unwrap();
         let label = icon.next_sibling().and_downcast::<Label>().unwrap();
 
-        let status = decode_status(&raw);
-        let name = decode_name(&raw);
-        let is_dir = decode_is_dir(&raw);
+        let info = DirRowInfo::decode(&raw);
 
-        icon.set_icon_name(Some(if is_dir {
+        icon.set_icon_name(Some(if info.is_dir {
             "folder-symbolic"
         } else {
             "text-x-generic-symbolic"
         }));
-        label.set_label(name);
-        apply_status_class(&label, status, is_left);
+        label.set_label(&info.name);
+        apply_status_class(&label, info.status.code(), is_left);
     });
 
     factory
@@ -340,15 +370,16 @@ fn make_field_factory(is_left: bool, field_idx: usize) -> SignalListItemFactory 
         let raw = obj.string();
 
         let label = item.child().and_downcast::<Label>().unwrap();
-        let status = decode_status(&raw);
-        let missing = (is_left && status == "R") || (!is_left && status == "L");
+        let info = DirRowInfo::decode(&raw);
+        let missing = (is_left && info.status == FileStatus::RightOnly)
+            || (!is_left && info.status == FileStatus::LeftOnly);
 
         label.set_label(if missing {
             ""
         } else {
-            decode_field(&raw, field_idx)
+            DirRowInfo::get_field_text(&raw, field_idx)
         });
-        apply_status_class(&label, status, is_left);
+        apply_status_class(&label, info.status.code(), is_left);
     });
 
     factory
@@ -373,11 +404,12 @@ pub(super) fn build_dir_window(
         let ld = left_dir.borrow().clone();
         let rd = right_dir.borrow().clone();
         let filters = settings.borrow().dir_filters.clone();
+        let hide_hidden = settings.borrow().hide_hidden_files;
         let cm = children_map.clone();
         let rs = root_store.clone();
         gtk4::glib::spawn_future_local(async move {
             let (entries, _) = gio::spawn_blocking(move || {
-                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters)
+                scan_tree(Path::new(&ld), Path::new(&rd), "", &filters, hide_hidden)
             })
             .await
             .unwrap();
@@ -395,10 +427,10 @@ pub(super) fn build_dir_window(
     let tree_model = TreeListModel::new(root_store.clone(), false, false, move |item| {
         let obj = item.downcast_ref::<StringObject>()?;
         let raw = obj.string();
-        if decode_is_dir(&raw) {
-            let rel = decode_rel_path(&raw);
+        let info = DirRowInfo::decode(&raw);
+        if info.is_dir {
             cm.borrow()
-                .get(rel)
+                .get(&info.rel_path)
                 .cloned()
                 .map(gio::prelude::Cast::upcast::<gio::ListModel>)
         } else {
@@ -406,10 +438,10 @@ pub(super) fn build_dir_window(
         }
     });
 
-    // Shared selection model — only the focused pane uses it;
-    // the other pane uses NoSelection so no highlight is shown.
+    // Both panes share the same SingleSelection so the selected row is
+    // highlighted on both sides.  The inactive pane is dimmed via opacity
+    // and bordered differently to distinguish from the focused pane.
     let dir_sel = SingleSelection::new(Some(tree_model.clone()));
-    let no_sel = gtk4::NoSelection::new(Some(tree_model.clone()));
 
     // ── Left pane ──────────────────────────────────────────────────
     let left_view = ColumnView::new(Some(dir_sel.clone()));
@@ -428,7 +460,8 @@ pub(super) fn build_dir_window(
     }
 
     // ── Right pane ─────────────────────────────────────────────────
-    let right_view = ColumnView::new(Some(no_sel.clone()));
+    let right_view = ColumnView::new(Some(dir_sel.clone()));
+    right_view.set_opacity(0.55);
     right_view.set_show_column_separators(true);
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
@@ -446,30 +479,52 @@ pub(super) fn build_dir_window(
     }
 
     // Track which pane was last focused (true = left, false = right).
-    // Swap models so only the focused pane shows selection.
+    // Both panes share the same SingleSelection so the selected row is
+    // highlighted on both sides; CSS borders distinguish the active pane.
     let focused_left = Rc::new(Cell::new(true));
     let sel_syncing = Rc::new(Cell::new(false));
-    left_view.add_css_class("dir-pane-focused");
+    // CSS classes for focus borders are set on ScrolledWindows below (after
+    // they are created), since ColumnView content is clipped by its parent.
+    let left_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
+    let right_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
     {
         let fl = focused_left.clone();
         let lv = left_view.clone();
         let rv = right_view.clone();
         let sel = dir_sel.clone();
-        let ns = no_sel.clone();
+        let ls = left_scroll_slot.clone();
+        let rs = right_scroll_slot.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             if fl.get() {
                 return;
             }
             fl.set(true);
-            lv.add_css_class("dir-pane-focused");
-            rv.remove_css_class("dir-pane-focused");
-            lv.set_model(Some(&sel));
-            rv.set_model(Some(&ns));
+            lv.set_opacity(1.0);
+            rv.set_opacity(0.55);
+            if let Some(sw) = ls.borrow().as_ref() {
+                sw.add_css_class("dir-pane-focused");
+                sw.remove_css_class("dir-pane-inactive");
+            }
+            if let Some(sw) = rs.borrow().as_ref() {
+                sw.remove_css_class("dir-pane-focused");
+                sw.add_css_class("dir-pane-inactive");
+            }
+            // Sync keyboard cursor to selection, then restore scroll position
             let pos = sel.selected();
+            let vadj = lv
+                .ancestor(ScrolledWindow::static_type())
+                .and_downcast::<ScrolledWindow>()
+                .map(|sw| (sw.vadjustment().value(), sw));
             let v = lv.clone();
             gtk4::glib::idle_add_local_once(move || {
                 v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
+                if let Some((val, sw)) = vadj {
+                    let sw2 = sw.clone();
+                    gtk4::glib::idle_add_local_once(move || {
+                        sw2.vadjustment().set_value(val);
+                    });
+                }
             });
         });
         left_view.add_controller(fc);
@@ -477,21 +532,39 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         let rv = right_view.clone();
         let sel = dir_sel.clone();
-        let ns = no_sel.clone();
+        let ls = left_scroll_slot.clone();
+        let rs = right_scroll_slot.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
             if !fl.get() {
                 return;
             }
             fl.set(false);
-            rv.add_css_class("dir-pane-focused");
-            lv.remove_css_class("dir-pane-focused");
-            rv.set_model(Some(&sel));
-            lv.set_model(Some(&ns));
+            rv.set_opacity(1.0);
+            lv.set_opacity(0.55);
+            if let Some(sw) = rs.borrow().as_ref() {
+                sw.add_css_class("dir-pane-focused");
+                sw.remove_css_class("dir-pane-inactive");
+            }
+            if let Some(sw) = ls.borrow().as_ref() {
+                sw.remove_css_class("dir-pane-focused");
+                sw.add_css_class("dir-pane-inactive");
+            }
+            // Sync keyboard cursor to selection, then restore scroll position
             let pos = sel.selected();
+            let vadj = rv
+                .ancestor(ScrolledWindow::static_type())
+                .and_downcast::<ScrolledWindow>()
+                .map(|sw| (sw.vadjustment().value(), sw));
             let v = rv.clone();
             gtk4::glib::idle_add_local_once(move || {
                 v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
+                if let Some((val, sw)) = vadj {
+                    let sw2 = sw.clone();
+                    gtk4::glib::idle_add_local_once(move || {
+                        sw2.vadjustment().set_value(val);
+                    });
+                }
             });
         });
         right_view.add_controller(fc);
@@ -536,6 +609,12 @@ pub(super) fn build_dir_window(
         .min_content_width(360)
         .child(&right_view)
         .build();
+
+    // Set initial focus border classes and populate slots for the handlers above.
+    left_scroll.add_css_class("dir-pane-focused");
+    right_scroll.add_css_class("dir-pane-inactive");
+    *left_scroll_slot.borrow_mut() = Some(left_scroll.clone());
+    *right_scroll_slot.borrow_mut() = Some(right_scroll.clone());
 
     // Synchronize vertical scrolling between left and right directory panes
     {
@@ -648,7 +727,7 @@ pub(super) fn build_dir_window(
             let saved_rel = (|| -> Option<String> {
                 let row = tm.item(saved_pos)?.downcast::<TreeListRow>().ok()?;
                 let obj = row.item().and_downcast::<StringObject>()?;
-                Some(decode_rel_path(&obj.string()).to_string())
+                Some(DirRowInfo::decode(&obj.string()).rel_path)
             })();
 
             // Save expanded rel_paths
@@ -658,7 +737,7 @@ pub(super) fn build_dir_window(
                     && row.is_expanded()
                     && let Some(obj) = row.item().and_downcast::<StringObject>()
                 {
-                    expanded.push(decode_rel_path(&obj.string()).to_string());
+                    expanded.push(DirRowInfo::decode(&obj.string()).rel_path);
                 }
             }
 
@@ -666,6 +745,7 @@ pub(super) fn build_dir_window(
             let ld_str = ld.borrow().clone();
             let rd_str = rd.borrow().clone();
             let filters = st.borrow().dir_filters.clone();
+            let hide_hidden = st.borrow().hide_hidden_files;
             let cm = cm.clone();
             let rs = rs.clone();
             let tm = tm.clone();
@@ -676,7 +756,13 @@ pub(super) fn build_dir_window(
             let loading = loading.clone();
             gtk4::glib::spawn_future_local(async move {
                 let (entries, _) = gio::spawn_blocking(move || {
-                    scan_tree(Path::new(&ld_str), Path::new(&rd_str), "", &filters)
+                    scan_tree(
+                        Path::new(&ld_str),
+                        Path::new(&rd_str),
+                        "",
+                        &filters,
+                        hide_hidden,
+                    )
                 })
                 .await
                 .unwrap();
@@ -716,7 +802,7 @@ pub(super) fn build_dir_window(
                     for i in 0..tm.n_items() {
                         if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
                             && let Some(obj) = row.item().and_downcast::<StringObject>()
-                            && decode_rel_path(&obj.string()) == rel.as_str()
+                            && DirRowInfo::decode(&obj.string()).rel_path == rel.as_str()
                         {
                             row.set_expanded(true);
                             break;
@@ -731,7 +817,7 @@ pub(super) fn build_dir_window(
                     for i in 0..n {
                         if let Some(row) = tm.item(i).and_then(|o| o.downcast::<TreeListRow>().ok())
                             && let Some(obj) = row.item().and_downcast::<StringObject>()
-                            && decode_rel_path(&obj.string()) == rel.as_str()
+                            && DirRowInfo::decode(&obj.string()).rel_path == rel.as_str()
                         {
                             final_pos = i;
                             break;
@@ -810,9 +896,9 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         copy_left_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw);
-                if status == "R" || status == "D" {
+                let info = DirRowInfo::decode(&raw);
+                if info.status == FileStatus::RightOnly || info.status == FileStatus::Different {
+                    let rel = info.rel_path;
                     let src = Path::new(rd.borrow().as_str()).join(&rel);
                     let dst = Path::new(ld.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
@@ -827,7 +913,7 @@ pub(super) fn build_dir_window(
                         }
                         reload();
                     };
-                    if status == "D" {
+                    if info.status == FileStatus::Different {
                         if let Some(win) = lv
                             .root()
                             .and_then(|r| r.downcast::<ApplicationWindow>().ok())
@@ -857,9 +943,9 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         copy_right_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw);
-                if status == "L" || status == "D" {
+                let info = DirRowInfo::decode(&raw);
+                if info.status == FileStatus::LeftOnly || info.status == FileStatus::Different {
+                    let rel = info.rel_path;
                     let src = Path::new(ld.borrow().as_str()).join(&rel);
                     let dst = Path::new(rd.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
@@ -874,7 +960,7 @@ pub(super) fn build_dir_window(
                         }
                         reload();
                     };
-                    if status == "D" {
+                    if info.status == FileStatus::Different {
                         if let Some(win) = lv
                             .root()
                             .and_then(|r| r.downcast::<ApplicationWindow>().ok())
@@ -905,15 +991,17 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         delete_btn.connect_clicked(move |_| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw).to_string();
+                let info = DirRowInfo::decode(&raw);
+                let rel = info.rel_path;
+                let status = info.status;
                 let lp = Path::new(ld.borrow().as_str()).join(&rel);
                 let rp = Path::new(rd.borrow().as_str()).join(&rel);
-                let path = match status.as_str() {
-                    "L" => Some(lp),
-                    "R" => Some(rp),
-                    "D" | "S" => Some(if fl.get() { lp } else { rp }),
-                    _ => None,
+                let path = match status {
+                    FileStatus::LeftOnly => Some(lp),
+                    FileStatus::RightOnly => Some(rp),
+                    FileStatus::Different | FileStatus::Same => {
+                        Some(if fl.get() { lp } else { rp })
+                    }
                 };
                 if let Some(p) = path
                     && let Some(win) = lv
@@ -949,9 +1037,9 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw);
-                if status == "R" || status == "D" {
+                let info = DirRowInfo::decode(&raw);
+                if info.status == FileStatus::RightOnly || info.status == FileStatus::Different {
+                    let rel = info.rel_path;
                     let src = Path::new(rd.borrow().as_str()).join(&rel);
                     let dst = Path::new(ld.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
@@ -966,7 +1054,7 @@ pub(super) fn build_dir_window(
                         }
                         reload();
                     };
-                    if status == "D" {
+                    if info.status == FileStatus::Different {
                         if let Some(win) = lv
                             .root()
                             .and_then(|r| r.downcast::<ApplicationWindow>().ok())
@@ -996,9 +1084,9 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw);
-                if status == "L" || status == "D" {
+                let info = DirRowInfo::decode(&raw);
+                if info.status == FileStatus::LeftOnly || info.status == FileStatus::Different {
+                    let rel = info.rel_path;
                     let src = Path::new(ld.borrow().as_str()).join(&rel);
                     let dst = Path::new(rd.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
@@ -1013,7 +1101,7 @@ pub(super) fn build_dir_window(
                         }
                         reload();
                     };
-                    if status == "D" {
+                    if info.status == FileStatus::Different {
                         if let Some(win) = lv
                             .root()
                             .and_then(|r| r.downcast::<ApplicationWindow>().ok())
@@ -1044,15 +1132,17 @@ pub(super) fn build_dir_window(
         let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
-                let rel = decode_rel_path(&raw).to_string();
-                let status = decode_status(&raw).to_string();
+                let info = DirRowInfo::decode(&raw);
+                let rel = info.rel_path;
+                let status = info.status;
                 let lp = Path::new(ld.borrow().as_str()).join(&rel);
                 let rp = Path::new(rd.borrow().as_str()).join(&rel);
-                let path = match status.as_str() {
-                    "L" => Some(lp),
-                    "R" => Some(rp),
-                    "D" | "S" => Some(if fl.get() { lp } else { rp }),
-                    _ => None,
+                let path = match status {
+                    FileStatus::LeftOnly => Some(lp),
+                    FileStatus::RightOnly => Some(rp),
+                    FileStatus::Different | FileStatus::Same => {
+                        Some(if fl.get() { lp } else { rp })
+                    }
                 };
                 if let Some(p) = path
                     && let Some(win) = lv
@@ -1087,6 +1177,38 @@ pub(super) fn build_dir_window(
     dir_paned.set_vexpand(true);
     dir_tab.insert_action_group("dir", Some(&dir_action_group));
 
+    // Capture-phase key handler for dir-only shortcuts (Alt+Left/Right, Delete)
+    // so they don't fire when a file-diff tab is focused.
+    {
+        let key_ctl = EventControllerKey::new();
+        key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let dag = dir_action_group.clone();
+        key_ctl.connect_key_pressed(move |_, key, _, mods| {
+            let action_name = if mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
+                match key {
+                    k if k == gtk4::gdk::Key::Left => Some("folder-copy-left"),
+                    k if k == gtk4::gdk::Key::Right => Some("folder-copy-right"),
+                    _ => None,
+                }
+            } else if mods.is_empty() && key == gtk4::gdk::Key::Delete {
+                Some("folder-delete")
+            } else {
+                None
+            };
+            if let Some(name) = action_name {
+                if let Some(action) = dag.lookup_action(name) {
+                    action
+                        .downcast_ref::<gio::SimpleAction>()
+                        .unwrap()
+                        .activate(None);
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        dir_tab.add_controller(key_ctl);
+    }
+
     // ── Notebook (tabs) ────────────────────────────────────────────
     let notebook = Notebook::new();
     notebook.set_scrollable(true);
@@ -1105,17 +1227,11 @@ pub(super) fn build_dir_window(
         let rd = right_dir.clone();
         let st = settings.clone();
         action.connect_activate(move |_, _| {
-            if let Some(raw) = get_row()
-                && !decode_is_dir(&raw)
-            {
-                open_file_diff(
-                    &nb,
-                    decode_rel_path(&raw),
-                    &tabs,
-                    &ld.borrow(),
-                    &rd.borrow(),
-                    &st,
-                );
+            if let Some(raw) = get_row() {
+                let info = DirRowInfo::decode(&raw);
+                if !info.is_dir {
+                    open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
+                }
             }
         });
         dir_action_group.add_action(&action);
@@ -1165,11 +1281,18 @@ pub(super) fn build_dir_window(
                     sel.set_selected(pos);
                 }
                 if let Some(raw) = get_row() {
-                    let is_dir = decode_is_dir(&raw);
-                    let status = decode_status(&raw);
-                    ao.set_enabled(!is_dir && (status == "D" || status == "S"));
-                    al.set_enabled(status == "R" || status == "D");
-                    ar.set_enabled(status == "L" || status == "D");
+                    let info = DirRowInfo::decode(&raw);
+                    let is_dir = info.is_dir;
+                    let status = info.status;
+                    ao.set_enabled(
+                        !is_dir && (status == FileStatus::Different || status == FileStatus::Same),
+                    );
+                    al.set_enabled(
+                        status == FileStatus::RightOnly || status == FileStatus::Different,
+                    );
+                    ar.set_enabled(
+                        status == FileStatus::LeftOnly || status == FileStatus::Different,
+                    );
                     pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                     pop.popup();
                 }
@@ -1180,56 +1303,69 @@ pub(super) fn build_dir_window(
         setup_dir_ctx(&right_view, dir_popover_r);
     }
 
-    // Activate handlers — double-click a file row to open diff in new tab
-    {
+    // Shared activate logic — used by both Enter key and double-click
+    let activate_row: Rc<dyn Fn()> = {
         let nb = notebook.clone();
         let tm = tree_model.clone();
         let tabs = open_tabs.clone();
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let sel = dir_sel.clone();
         let st = settings.clone();
-        left_view.connect_activate(move |_, pos| {
+        Rc::new(move || {
+            let pos = sel.selected();
             if let Some(item) = tm.item(pos) {
                 let row = item.downcast::<TreeListRow>().unwrap();
                 let obj = row.item().and_downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                if !decode_is_dir(&raw) {
-                    open_file_diff(
-                        &nb,
-                        decode_rel_path(&raw),
-                        &tabs,
-                        &ld.borrow(),
-                        &rd.borrow(),
-                        &st,
-                    );
+                let info = DirRowInfo::decode(&raw);
+                if info.is_dir {
+                    row.set_expanded(!row.is_expanded());
+                } else {
+                    open_file_diff(&nb, &info.rel_path, &tabs, &ld.borrow(), &rd.borrow(), &st);
                 }
             }
-        });
+        })
+    };
+
+    // Double-click activates via connect_activate
+    {
+        let ar = activate_row.clone();
+        left_view.connect_activate(move |_, _| ar());
     }
     {
-        let nb = notebook.clone();
-        let tm = tree_model.clone();
-        let tabs = open_tabs.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
-        let st = settings.clone();
-        right_view.connect_activate(move |_, pos| {
-            if let Some(item) = tm.item(pos) {
-                let row = item.downcast::<TreeListRow>().unwrap();
-                let obj = row.item().and_downcast::<StringObject>().unwrap();
-                let raw = obj.string();
-                if !decode_is_dir(&raw) {
-                    open_file_diff(
-                        &nb,
-                        decode_rel_path(&raw),
-                        &tabs,
-                        &ld.borrow(),
-                        &rd.borrow(),
-                        &st,
-                    );
-                }
+        let ar = activate_row.clone();
+        right_view.connect_activate(move |_, _| ar());
+    }
+
+    // Capture Enter on ColumnViews so it works reliably after tab close
+    {
+        let ar = activate_row.clone();
+        let kc = EventControllerKey::new();
+        kc.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        kc.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Return || key == gtk4::gdk::Key::KP_Enter {
+                ar();
+                gtk4::glib::Propagation::Stop
+            } else {
+                gtk4::glib::Propagation::Proceed
             }
         });
+        left_view.add_controller(kc);
+    }
+    {
+        let ar = activate_row.clone();
+        let kc = EventControllerKey::new();
+        kc.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        kc.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Return || key == gtk4::gdk::Key::KP_Enter {
+                ar();
+                gtk4::glib::Propagation::Stop
+            } else {
+                gtk4::glib::Propagation::Proceed
+            }
+        });
+        right_view.add_controller(kc);
     }
 
     // ── File watcher ───────────────────────────────────────────────
@@ -1258,8 +1394,11 @@ pub(super) fn build_dir_window(
     {
         let reload = reload_dir.clone();
         let alive = dir_watcher_alive.clone();
+        let st = settings.clone();
         let mut dirty = false;
         let mut retry_count: u32 = 0;
+        let mut prev_hide_hidden = st.borrow().hide_hidden_files;
+        let mut prev_filters = st.borrow().dir_filters.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
             let _ = &dir_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
@@ -1268,6 +1407,15 @@ pub(super) fn build_dir_window(
             while fs_rx.try_recv().is_ok() {
                 dirty = true;
                 retry_count = 0; // new FS event resets the retry counter
+            }
+            // Also rescan when filter settings change (e.g. via live preferences)
+            {
+                let s = st.borrow();
+                if s.hide_hidden_files != prev_hide_hidden || s.dir_filters != prev_filters {
+                    prev_hide_hidden = s.hide_hidden_files;
+                    prev_filters = s.dir_filters.clone();
+                    dirty = true;
+                }
             }
             if dirty
                 && !is_saving_under(&[
@@ -1280,7 +1428,7 @@ pub(super) fn build_dir_window(
                 // Reload open file tabs; keep dirty if any tab read fails
                 let mut any_tab_failed = false;
                 for tab in tabs_reload.borrow().iter() {
-                    if !reload_file_tab(tab, &ld_reload.borrow(), &rd_reload.borrow()) {
+                    if !reload_file_tab(tab) {
                         any_tab_failed = true;
                     }
                 }
@@ -1347,7 +1495,6 @@ pub(super) fn build_dir_window(
         win_actions.add_action(&action);
     }
     window.insert_action_group("win", Some(&win_actions));
-    window.insert_action_group("dir", Some(&dir_action_group));
 
     // Unsaved-changes guard on window close button
     {
@@ -1366,18 +1513,17 @@ pub(super) fn build_dir_window(
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
         gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
+        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
         gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
-        // Directory copy actions
-        gtk_app.set_accels_for_action("dir.folder-copy-left", &["<Alt>Left"]);
-        gtk_app.set_accels_for_action("dir.folder-copy-right", &["<Alt>Right"]);
-        gtk_app.set_accels_for_action("dir.folder-delete", &["Delete"]);
+        // Note: dir.folder-copy-left/right/delete are NOT registered as app accels
+        // because they would fire even on file-diff tabs. Instead, a capture-phase
+        // key handler on dir_tab dispatches them (see below dir_tab setup).
     }
 
     window.connect_destroy(move |_| {
         dir_watcher_alive.set(false);
     });
-
     window.present();
     left_view.grab_focus();
 }
@@ -1390,93 +1536,108 @@ mod tests {
 
     #[test]
     fn encode_decode_roundtrip() {
-        let encoded = encode_row(
-            FileStatus::Different,
-            "test.txt",
-            false,
-            "subdir/test.txt",
-            Some(1024),
-            None,
-            Some(2048),
-            None,
-        );
-        assert_eq!(decode_status(&encoded), "D");
-        assert_eq!(decode_name(&encoded), "test.txt");
-        assert!(!decode_is_dir(&encoded));
-        assert_eq!(decode_rel_path(&encoded), "subdir/test.txt");
+        let original = DirRowInfo {
+            status: FileStatus::Different,
+            name: "test.txt".to_string(),
+            is_dir: false,
+            rel_path: "subdir/test.txt".to_string(),
+            left_size: Some(1024),
+            left_mtime: None,
+            right_size: Some(2048),
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::Different);
+        assert_eq!(decoded.name, "test.txt");
+        assert!(!decoded.is_dir);
+        assert_eq!(decoded.rel_path, "subdir/test.txt");
     }
 
     #[test]
     fn encode_decode_directory() {
-        let encoded = encode_row(
-            FileStatus::Same,
-            "mydir",
-            true,
-            "parent/mydir",
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(decode_status(&encoded), "S");
-        assert_eq!(decode_name(&encoded), "mydir");
-        assert!(decode_is_dir(&encoded));
-        assert_eq!(decode_rel_path(&encoded), "parent/mydir");
+        let original = DirRowInfo {
+            status: FileStatus::Same,
+            name: "mydir".to_string(),
+            is_dir: true,
+            rel_path: "parent/mydir".to_string(),
+            left_size: None,
+            left_mtime: None,
+            right_size: None,
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::Same);
+        assert_eq!(decoded.name, "mydir");
+        assert!(decoded.is_dir);
+        assert_eq!(decoded.rel_path, "parent/mydir");
     }
 
     #[test]
     fn encode_decode_left_only() {
-        let encoded = encode_row(
-            FileStatus::LeftOnly,
-            "orphan.rs",
-            false,
-            "orphan.rs",
-            Some(512),
-            None,
-            None,
-            None,
-        );
-        assert_eq!(decode_status(&encoded), "L");
-        assert_eq!(decode_name(&encoded), "orphan.rs");
+        let original = DirRowInfo {
+            status: FileStatus::LeftOnly,
+            name: "orphan.rs".to_string(),
+            is_dir: false,
+            rel_path: "orphan.rs".to_string(),
+            left_size: Some(512),
+            left_mtime: None,
+            right_size: None,
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::LeftOnly);
+        assert_eq!(decoded.name, "orphan.rs");
     }
 
     #[test]
     fn encode_decode_right_only() {
-        let encoded = encode_row(
-            FileStatus::RightOnly,
-            "new_file.rs",
-            false,
-            "new_file.rs",
-            None,
-            None,
-            Some(256),
-            None,
-        );
-        assert_eq!(decode_status(&encoded), "R");
-        assert_eq!(decode_name(&encoded), "new_file.rs");
+        let original = DirRowInfo {
+            status: FileStatus::RightOnly,
+            name: "new_file.rs".to_string(),
+            is_dir: false,
+            rel_path: "new_file.rs".to_string(),
+            left_size: None,
+            left_mtime: None,
+            right_size: Some(256),
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.status, FileStatus::RightOnly);
+        assert_eq!(decoded.name, "new_file.rs");
     }
 
     #[test]
     fn decode_field_out_of_bounds() {
-        // Should return empty string for missing fields
-        assert_eq!(decode_field("a\x1fb", 5), "");
-        assert_eq!(decode_field("", 0), "");
+        // Should return empty string for missing fields via helper
+        assert_eq!(DirRowInfo::get_field_text("a\x1fb", 5), "");
+        assert_eq!(DirRowInfo::get_field_text("", 0), "");
     }
 
     #[test]
     fn decode_name_with_special_chars() {
-        let encoded = encode_row(
-            FileStatus::Same,
-            "file with spaces.txt",
-            false,
-            "path/file with spaces.txt",
-            None,
-            None,
-            None,
-            None,
-        );
-        assert_eq!(decode_name(&encoded), "file with spaces.txt");
-        assert_eq!(decode_rel_path(&encoded), "path/file with spaces.txt");
+        let original = DirRowInfo {
+            status: FileStatus::Same,
+            name: "file with spaces.txt".to_string(),
+            is_dir: false,
+            rel_path: "path/file with spaces.txt".to_string(),
+            left_size: None,
+            left_mtime: None,
+            right_size: None,
+            right_mtime: None,
+        };
+        let encoded = original.encode();
+        let decoded = DirRowInfo::decode(&encoded);
+
+        assert_eq!(decoded.name, "file with spaces.txt");
+        assert_eq!(decoded.rel_path, "path/file with spaces.txt");
     }
 
     // ── FileStatus ────────────────────────────────────────────────

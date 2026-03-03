@@ -1,0 +1,294 @@
+# Manual Testing Checklist
+
+## CLI / Launch Modes
+
+- [ ] No arguments: launches Welcome window
+- [ ] Two file paths: opens file diff window
+- [ ] Two directory paths: opens directory comparison window
+- [ ] Three file paths: opens 3-way merge window
+- [ ] One directory (git repo): opens VCS window
+- [ ] One directory (not a git repo): prints error and exits
+- [ ] Single file path: prints error and exits
+- [ ] Non-existent path: prints error and exits
+- [ ] File + directory mix: prints error
+- [ ] `-L`/`--label` flags: custom pane labels shown for 2-file and 3-file modes
+- [ ] `--version` / `--help`: correct output
+
+## Welcome Window
+
+- [ ] "Compare Files" button: two file dialogs, then opens diff; welcome closes
+- [ ] "Compare Directories" button: two folder dialogs, then opens dir window; welcome closes
+- [ ] "3-way Merge" button: three file dialogs, then opens merge; welcome closes
+- [ ] Preferences button / Ctrl+,: opens Preferences dialog
+- [ ] Ctrl+W: closes welcome window
+- [ ] Cancel any file dialog: nothing happens
+
+## File Diff (2-way)
+
+### Display
+- [ ] Chunk backgrounds: blue for replace, green for insert/delete
+- [ ] Current chunk: bold dark borders when navigating
+- [ ] Inline word-level highlighting: yellow (changed), pink (deleted), green (inserted)
+- [ ] Filler lines: thin colored lines where the other side has more content
+- [ ] Gutter: curved connecting bands between panes
+- [ ] Chunk map strips: minimap of changes at far edges; clickable to jump
+- [ ] Syntax highlighting: detected from filename
+- [ ] Line numbers: shown/hidden per settings
+
+### Toolbar
+- [ ] Undo (Ctrl+Z) / Redo (Ctrl+Shift+Z): acts on last-focused pane
+- [ ] Previous change (Alt+Up / Ctrl+E): navigates to previous diff chunk
+- [ ] Next change (Alt+Down / Ctrl+D): navigates to next diff chunk
+- [ ] Chunk label: shows "N changes" or "Change X of N"
+- [ ] Go to line (Ctrl+L): entry appears; type number + Enter to jump; Escape to dismiss; focus returns to active pane
+- [ ] Blanks toggle: re-diffs ignoring blank lines
+- [ ] Spaces toggle: re-diffs ignoring whitespace
+- [ ] Export patch (Ctrl+Shift+P): save dialog; generates unified diff
+- [ ] Swap panes: swaps content, labels, save paths, dirty state; title updates
+- [ ] Preferences (Ctrl+,): opens Preferences
+
+### Gutter Interactions
+- [ ] Click right arrow: copies left chunk to right
+- [ ] Click left arrow: copies right chunk to left
+- [ ] Right-click gutter: context menu with both copy options
+- [ ] Paste highlight flash: 500ms blue flash on inserted text
+
+### Scroll Sync
+- [ ] Horizontal scroll synced between panes
+- [ ] Vertical scroll independent per pane
+
+### Find / Replace
+- [ ] Ctrl+F: opens find bar; Ctrl+H: opens find + replace
+- [ ] Typing highlights all matches in both buffers; shows match count
+- [ ] Find next (F3 / Enter) / Find prev (Shift+F3): wraps around
+- [ ] F3/Shift+F3 works from find entry, replace entry, and source pane
+- [ ] Escape closes find bar from source pane (not just from find entry)
+- [ ] Replace: replaces current selection if it matches
+- [ ] Replace All: replaces in both buffers
+- [ ] Close (X / Escape): hides bar, clears highlights
+
+### Save
+- [ ] Save button insensitive until buffer changes
+- [ ] Save writes correct file; button goes insensitive; error dialog on failure
+- [ ] Save path tracks swaps: after swap, save writes to correct original file
+- [ ] Save after swap: pane contents and labels remain consistent (no un-swap)
+- [ ] Save after swap in dir file tab: watcher reload preserves swapped state
+
+### File Watcher
+- [ ] External file change: auto-reloads if no unsaved changes
+- [ ] External change while unsaved: reload skipped
+- [ ] Save suppresses reload for 600ms (no reload loop)
+
+### Close / Dialogs
+- [ ] Ctrl+W: closes window
+- [ ] Close with no unsaved changes: closes immediately
+- [ ] Close with unsaved changes: dialog with per-file checkboxes, Save/Close without Saving/Cancel
+- [ ] Save failure in dialog: window does NOT close
+- [ ] Overwrite confirm dialog: Escape key closes it
+- [ ] Ctrl+Shift+P: export patch dialog opens (sourceview doesn't consume it)
+
+### Chunk Copy (Alt+Left / Alt+Right)
+- [ ] Alt+Right on a diff chunk: copies left chunk content to right (no file copy dialog)
+- [ ] Alt+Left on a diff chunk: copies right chunk content to left (no file copy dialog)
+- [ ] Alt+Left/Right with no current chunk: nothing happens
+- [ ] In dir window file tab: Alt+Left/Right copies chunks, does NOT trigger dir file copy
+
+### Edge Cases
+- [ ] Identical files: "Files are identical" info bar; edit one side -> bar disappears; undo -> reappears
+- [ ] Binary files: info bar, panes read-only, patch button disabled, swap/nav/blanks/spaces/undo/redo buttons disabled
+- [ ] Empty files: no chunks, label shows "No changes"
+- [ ] Empty file vs non-empty file: all-insert chunks on one side
+- [ ] Very large files (10K+ lines): background diff, UI stays responsive
+- [ ] UTF-8 with multi-byte characters: inline highlighting correct
+- [ ] Files with only whitespace differences + Spaces toggle on: no differences shown
+- [ ] Files with only blank line differences + Blanks toggle on: no differences shown
+- [ ] Swap panes twice: returns to original state
+
+## Navigation
+
+- [ ] Alt+Up/Down: cursor moves to chunk start line
+- [ ] Click in pane, then Alt+Down: navigates from cursor position, not from top
+- [ ] Navigate chunks with cursor in different positions: cursor-aware seeking
+- [ ] Alt+Up/Down intercepted: sourceview move-lines action does not fire
+
+## Directory Comparison
+
+### Display
+- [ ] Tree view with expandable directories
+- [ ] Columns: Name (with icon), Size, Modification time
+- [ ] Directory headers above each pane with full path as tooltip
+- [ ] Status colors: blue (different), orange (left-only), green (right-only), dim italic (missing side)
+
+### Navigation
+- [ ] Double-click file row: opens diff in new notebook tab
+- [ ] Enter on file row: opens diff in new notebook tab
+- [ ] Enter on directory row: expands/collapses folder
+- [ ] Enter after closing a file tab: still works (no broken activation state)
+- [ ] Left/Right arrow keys: switch focus between panes
+- [ ] Selection syncs between panes (highlighted on both sides)
+- [ ] Active pane: accent-color border; inactive pane: dim border + reduced opacity
+- [ ] Switching panes: no scroll jump, keyboard cursor syncs to selected row
+
+### Toolbar
+- [ ] Copy to left (Alt+Left): copies right to left; confirms if overwriting
+- [ ] Copy to right (Alt+Right): copies left to right; confirms if overwriting
+- [ ] Delete (Delete key): trashes selected file with confirmation
+- [ ] Swap panes: rescans, updates headers and window title
+- [ ] Preferences (Ctrl+,)
+
+### Context Menu
+- [ ] Right-click selects the clicked row first
+- [ ] "Open Diff": opens diff tab (disabled for directories)
+- [ ] "Copy to Left" / "Copy to Right": enabled for appropriate statuses
+- [ ] "Delete": always available
+
+### Notebook Tabs
+- [ ] Directory tab labeled "Directory"
+- [ ] File tabs labeled with dir-relative names
+- [ ] Opening file diff tab: left pane has focus, cursor at line 1
+- [ ] Tab close (X): prompts for unsaved changes
+- [ ] Ctrl+W on Directory tab: closes entire window
+- [ ] Ctrl+W on file tab: closes that tab
+- [ ] Same file not opened twice: switches to existing tab
+
+### File Watcher
+- [ ] Directory rescans on FS changes (500ms poll)
+- [ ] Expanded directories and selection restored after rescan
+- [ ] Open tab buffers reloaded unless unsaved
+
+### Filters
+- [ ] Filtered names (.git, node_modules, etc.) excluded from tree
+- [ ] Custom filters from preferences applied
+- [ ] Hide hidden files on (default): dotfiles excluded from tree
+- [ ] Hide hidden files off: dotfiles shown in tree
+
+### Edge Cases
+- [ ] Deeply nested directory trees
+- [ ] Copy directory recursively: all nested files copied
+- [ ] Dir -> file tab -> swap -> edit -> save dialog shows correct filename
+- [ ] Window close with unsaved tabs: dialog lists all unsaved files
+
+## 3-Way Merge
+
+### Display
+- [ ] Three panes: left (read-only), middle (editable), right (read-only)
+- [ ] Left/right save buttons hidden; only middle has save button
+- [ ] Left gutter: bands connecting left to middle
+- [ ] Right gutter: bands connecting middle to right
+- [ ] Conflict backgrounds: red/pink overlays on middle where left/right overlap
+- [ ] Chunk maps on both edges
+
+### Toolbar
+- [ ] Undo/Redo (Ctrl+Z / Ctrl+Shift+Z): acts on active pane
+- [ ] Previous/Next change (Alt+Up/Down): per-pane cursor-based navigation
+- [ ] Navigation only places cursor on involved panes (not the third uninvolved pane)
+- [ ] Previous/Next conflict (Ctrl+J / Ctrl+K): navigates `<<<<<<<` markers in middle
+- [ ] Conflict label: "N conflicts" / "Conflict X of N" / "No conflicts"
+- [ ] Go to line (Ctrl+L)
+- [ ] Blanks / Spaces toggles
+- [ ] Preferences (Ctrl+,)
+
+### Gutter Interactions
+- [ ] Only inward arrows: left gutter has right-arrows only, right gutter has left-arrows only
+- [ ] Click left gutter arrow: copies left chunk into middle
+- [ ] Click right gutter arrow: copies right chunk into middle
+- [ ] Right-click context menus: "Copy Left -> Middle" / "Copy Right -> Middle"
+
+### Scroll Sync
+- [ ] Horizontal sync across all three panes
+- [ ] Vertical independent per pane
+
+### Find / Replace
+- [ ] Ctrl+F/H: find bar highlights matches across all three buffers
+- [ ] Match count sums all three buffers
+- [ ] Replace All replaces in all three buffers
+
+### Edge Cases
+- [ ] Binary files: all panes show info bar; all read-only; middle save hidden
+- [ ] All three identical: no changes, no chunks
+- [ ] Both sides modify same region: conflict overlay on middle
+- [ ] Copy left then copy right to same region: middle updates; undo works
+- [ ] Undo/redo across panes: applies to active pane's buffer
+
+## VCS (Git) Window
+
+### Display
+- [ ] Window title: "mergers -- reponame (git)"
+- [ ] ColumnView: Status and File columns
+- [ ] Status colors: Modified/Renamed = blue, Added/Untracked = green, Deleted = orange
+- [ ] Repo path label and changed file count
+
+### Opening Diffs
+- [ ] Double-click / Enter: opens diff tab (HEAD vs working copy)
+- [ ] Modified/Renamed: HEAD content on left, working file on right
+- [ ] Added/Untracked: empty left, working file on right
+- [ ] Deleted: HEAD content on left, empty right
+- [ ] Already-open tab: switches to existing tab
+
+### Context Menu
+- [ ] Right-click selects clicked row
+- [ ] "Open Diff": opens diff (disabled for Untracked)
+- [ ] "Discard Changes": runs `git checkout --` with confirmation (disabled for Untracked)
+- [ ] "Stage": runs `git add`
+- [ ] "Trash": moves to trash with confirmation (Untracked only)
+
+### File Watcher
+- [ ] Auto-refresh on FS changes (500ms poll)
+- [ ] `.git` directory events ignored
+- [ ] Smart update: skips rebuild if status unchanged
+
+### Notebook / Close
+- [ ] "Changes" tab first; Ctrl+W on it closes window
+- [ ] Ctrl+W on file tab: closes tab with unsaved check
+- [ ] Window close: checks all tabs for unsaved changes
+- [ ] Temp directory cleaned up on window destroy
+
+### Security
+- [ ] Paths with `..` components refused
+
+## Preferences
+
+- [ ] Font: chooser dialog; live-apply
+- [ ] Color scheme: dropdown; live-apply; case-insensitive matching
+- [ ] Show line numbers: toggle; live-apply
+- [ ] Highlight current line: toggle; live-apply
+- [ ] Word wrap (None/Word/Character): dropdown; live-apply
+- [ ] Tab width (1-16): spin button; live-apply
+- [ ] Hide hidden files: toggle; default on; saved to settings
+- [ ] File filters: add/remove entries; saved on dialog close
+- [ ] Settings persisted to `~/.config/mergers/settings.toml`
+- [ ] Changes applied to all views in the parent window
+- [ ] Escape closes preferences dialog
+- [ ] Close button at bottom closes preferences dialog
+
+## Dark Mode
+
+- [ ] Linux/GNOME: auto-detects system dark mode
+- [ ] macOS: falls back to `defaults read -g AppleInterfaceStyle`
+- [ ] Sets `gtk_application_prefer_dark_theme` for GTK widgets
+
+## Global Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| Ctrl+Q | Quit (close all windows) |
+| Ctrl+W | Close current tab/window |
+| Ctrl+, | Preferences |
+| Ctrl+Z | Undo |
+| Ctrl+Shift+Z | Redo |
+| Alt+Up / Ctrl+E | Previous change |
+| Alt+Down / Ctrl+D | Next change |
+| Ctrl+J | Previous conflict (merge only) |
+| Ctrl+K | Next conflict (merge only) |
+| Ctrl+F | Find |
+| Ctrl+H | Find + Replace |
+| F3 | Find next |
+| Shift+F3 | Find previous |
+| Ctrl+L | Go to line |
+| Ctrl+Shift+P | Export patch (file diff only) |
+| Alt+Left | Copy chunk right→left (file diff) / Copy file to left (dir) |
+| Alt+Right | Copy chunk left→right (file diff) / Copy file to right (dir) |
+| Ctrl+S | Save active pane |
+| Delete | Delete selected (dir only) |
+| Enter | Open selected file / expand-collapse dir (dir/VCS) |
+| Escape | Close find bar / go-to-line / preferences dialog |

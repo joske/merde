@@ -714,6 +714,7 @@ fn build_merge_view(
                 if let Some(iter) = buf.iter_at_line(target as i32) {
                     buf.place_cursor(&iter);
                 }
+                tv.grab_focus();
             }
             e.set_visible(false);
             entry.set_text("");
@@ -839,21 +840,23 @@ fn build_merge_view(
         if let Some((idx, is_right)) = found {
             cur.set(Some((idx, is_right)));
             if is_right {
+                // right_chunks: A = middle, B = right
                 let chunk = &rch[idx];
                 scroll_to_line(mtv, mb, chunk.start_a, ms);
                 scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
-                scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
                 place_cursor_at_line(mb, chunk.start_a);
                 place_cursor_at_line(rb, chunk.start_b);
-                place_cursor_at_line(lb, chunk.start_a);
+                // Left pane: no corresponding line — just scroll to middle line
+                scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
             } else {
+                // left_chunks: A = left, B = middle
                 let chunk = &lch[idx];
                 scroll_to_line(mtv, mb, chunk.start_b, ms);
                 scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
-                scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
                 place_cursor_at_line(mb, chunk.start_b);
                 place_cursor_at_line(lb, chunk.start_a);
-                place_cursor_at_line(rb, chunk.start_b);
+                // Right pane: no corresponding line — just scroll to middle line
+                scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
             }
             lf.queue_draw();
             mf.queue_draw();
@@ -1555,14 +1558,16 @@ fn build_merge_view(
         });
     }
 
-    // Escape in find entry
-    {
+    // Escape / F3 in find and replace entries
+    for entry in [&find_entry, &replace_entry] {
         let fr = find_revealer.clone();
         let lb = left_buf.clone();
         let mb = middle_buf.clone();
         let rb = right_buf.clone();
+        let fnb = find_next_btn.clone();
+        let fpb = find_prev_btn.clone();
         let key_ctl = EventControllerKey::new();
-        key_ctl.connect_key_pressed(move |_, key, _, _| {
+        key_ctl.connect_key_pressed(move |_, key, _, mods| {
             if key == gtk4::gdk::Key::Escape {
                 fr.set_reveal_child(false);
                 clear_search_tags(&lb);
@@ -1570,9 +1575,17 @@ fn build_merge_view(
                 clear_search_tags(&rb);
                 return gtk4::glib::Propagation::Stop;
             }
+            if key == gtk4::gdk::Key::F3 {
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    fpb.emit_clicked();
+                } else {
+                    fnb.emit_clicked();
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
             gtk4::glib::Propagation::Proceed
         });
-        find_entry.add_controller(key_ctl);
+        entry.add_controller(key_ctl);
     }
 
     // Layout: [chunk_map | left pane | left_gutter | middle pane | right_gutter | right pane | chunk_map]
@@ -1804,6 +1817,91 @@ fn build_merge_view(
         action_group.add_action(&action);
     }
 
+    // Ctrl+S: save middle pane (only editable pane in merge)
+    {
+        let action = gio::SimpleAction::new("save", None);
+        let mb = middle_buf.clone();
+        let msp = middle_pane.save_path.clone();
+        let ms = middle_pane.save_btn.clone();
+        action.connect_activate(move |_, _| {
+            if ms.is_sensitive() {
+                let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
+                save_file(&msp.borrow(), text.as_str(), &ms);
+            }
+        });
+        action_group.add_action(&action);
+    }
+
+    // Capture-phase key handler for shortcuts sourceview would consume
+    for tv in [
+        &left_pane.text_view,
+        &middle_pane.text_view,
+        &right_pane.text_view,
+    ] {
+        let key_ctl = EventControllerKey::new();
+        key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+        let ag = action_group.clone();
+        let fr = find_revealer.clone();
+        let lb = left_buf.clone();
+        let mb = middle_buf.clone();
+        let rb = right_buf.clone();
+        key_ctl.connect_key_pressed(move |_, key, _, mods| {
+            if key == gtk4::gdk::Key::Escape && fr.is_child_revealed() {
+                fr.set_reveal_child(false);
+                clear_search_tags(&lb);
+                clear_search_tags(&mb);
+                clear_search_tags(&rb);
+                return gtk4::glib::Propagation::Stop;
+            }
+            let action_name = if mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
+                match key {
+                    k if k == gtk4::gdk::Key::Up => Some("prev-chunk"),
+                    k if k == gtk4::gdk::Key::Down => Some("next-chunk"),
+                    _ => None,
+                }
+            } else if mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK) {
+                if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
+                    Some("save")
+                } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
+                    Some("prev-chunk")
+                } else if key == gtk4::gdk::Key::d || key == gtk4::gdk::Key::D {
+                    Some("next-chunk")
+                } else if key == gtk4::gdk::Key::f || key == gtk4::gdk::Key::F {
+                    Some("find")
+                } else if key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H {
+                    Some("find-replace")
+                } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
+                    Some("go-to-line")
+                } else if key == gtk4::gdk::Key::j || key == gtk4::gdk::Key::J {
+                    Some("prev-conflict")
+                } else if key == gtk4::gdk::Key::k || key == gtk4::gdk::Key::K {
+                    Some("next-conflict")
+                } else {
+                    None
+                }
+            } else if key == gtk4::gdk::Key::F3 {
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    Some("find-prev")
+                } else {
+                    Some("find-next")
+                }
+            } else {
+                None
+            };
+            if let Some(name) = action_name {
+                if let Some(action) = ag.lookup_action(name) {
+                    action
+                        .downcast_ref::<gio::SimpleAction>()
+                        .unwrap()
+                        .activate(None);
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        tv.add_controller(key_ctl);
+    }
+
     MergeViewResult {
         widget,
         left_buf,
@@ -1994,6 +2092,7 @@ pub(super) fn build_merge_window(
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
         gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
+        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
         gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
         gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
     }
