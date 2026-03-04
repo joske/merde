@@ -14,19 +14,23 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 - **Directory comparison** with recursive scanning and async background diffing
 - **Git integration** — run `mergers .` to view uncommitted changes
 - Inline **word-level diff** highlighting
-- **Ignore whitespace / blank lines** options
+- **Ignore whitespace / blank lines** options (with persistent defaults in preferences)
 - **Find & Replace** within panes
 - **Go to line** (Ctrl+L)
 - **Undo / Redo**
-- **Chunk navigation** with keyboard shortcuts
-- **Chunk map** — visual overview strips alongside each pane
+- **Chunk navigation** with keyboard shortcuts (with optional wrap-around)
+- **Synchronized scrolling** — chunk-aware vertical sync keeps corresponding lines aligned
+- **Chunk map** — visual overview strips alongside each pane with viewport indicator
 - **Patch export** (unified diff format)
 - **Swap panes**
 - **Custom pane labels** via `-L` flag
 - **Directory copy/delete** operations
 - **File watcher** — auto-reloads when files change on disk
 - **Configurable folder filters** (exclude patterns like `node_modules`, `.git`, etc.)
-- **Preferences dialog** — font, color scheme, tab width, filters, with live preview
+- **Insert spaces instead of tabs** option
+- **Show whitespace characters** (spaces, tabs, newlines)
+- **Keyboard shortcuts reference** — accessible from the preferences dialog
+- **Preferences dialog** — font, color scheme, tab width, editor & comparison defaults, filters, with live preview
 - **Binary file detection** — prevents loading binary files into text buffers
 
 ## Installation
@@ -126,6 +130,7 @@ git mergetool
 | **Ignore Blank Lines**            | Yes                   | Yes                            | No                                                |
 | **Text Wrapping Options**         | Yes                   | Yes                            | No                                                |
 | **File Monitoring / Auto-reload** | Yes                   | Yes                            | No                                                |
+| **Synchronized Scrolling**        | Yes                   | Yes                            | No                                                |
 | **Chunk Map (minimap)**           | Yes                   | Yes                            | No                                                |
 | **Conflict Marker Detection**     | Yes                   | No                             | No                                                |
 | **Folder Filters**                | Yes                   | Yes                            | N/A                                               |

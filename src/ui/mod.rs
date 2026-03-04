@@ -38,6 +38,46 @@ use crate::{
     settings::Settings,
 };
 
+/// Whether the primary modifier (Ctrl, or Cmd on macOS) is pressed.
+fn has_primary_modifier(mods: gtk4::gdk::ModifierType) -> bool {
+    if cfg!(target_os = "macos") {
+        mods.contains(gtk4::gdk::ModifierType::META_MASK)
+    } else {
+        mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
+    }
+}
+
+/// Register accelerators, replacing Ctrl with Cmd on macOS.
+fn set_platform_accels(app: &gtk4::Application, action: &str, accels: &[&str]) {
+    if cfg!(target_os = "macos") {
+        let mapped: Vec<String> = accels
+            .iter()
+            .map(|s| {
+                if let Some(rest) = s.strip_prefix("<Ctrl><Shift>") {
+                    format!("<Meta><Shift>{rest}")
+                } else if let Some(rest) = s.strip_prefix("<Ctrl>") {
+                    format!("<Meta>{rest}")
+                } else {
+                    (*s).to_string()
+                }
+            })
+            .collect();
+        let refs: Vec<&str> = mapped.iter().map(String::as_str).collect();
+        app.set_accels_for_action(action, &refs);
+    } else {
+        app.set_accels_for_action(action, accels);
+    }
+}
+
+/// Display name for the primary modifier key.
+fn primary_key_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Cmd"
+    } else {
+        "Ctrl"
+    }
+}
+
 mod common;
 mod diff_state;
 mod diff_view;
@@ -155,7 +195,7 @@ pub fn build_ui(application: &Application, mode: CompareMode) {
             }
         });
         application.add_action(&quit);
-        application.set_accels_for_action("app.quit", &["<Ctrl>q"]);
+        set_platform_accels(application, "app.quit", &["<Ctrl>q"]);
     }
 
     {

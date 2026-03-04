@@ -242,8 +242,8 @@ pub(super) fn build_diff_view(
     }
 
     // Text filter state (created early so connect_changed can use it)
-    let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(false));
-    let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(settings.borrow().ignore_blank_lines));
+    let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(settings.borrow().ignore_whitespace));
 
     // Scroll synchronization
     setup_scroll_sync(
@@ -316,9 +316,15 @@ pub(super) fn build_diff_view(
     update_chunk_label(&chunk_label, &chunks.borrow(), None);
 
     let prev_btn = Button::from_icon_name("go-up-symbolic");
-    prev_btn.set_tooltip_text(Some("Previous change (Alt+Up / Ctrl+E)"));
+    prev_btn.set_tooltip_text(Some(&format!(
+        "Previous change (Alt+Up / {}+E)",
+        primary_key_name()
+    )));
     let next_btn = Button::from_icon_name("go-down-symbolic");
-    next_btn.set_tooltip_text(Some("Next change (Alt+Down / Ctrl+D)"));
+    next_btn.set_tooltip_text(Some(&format!(
+        "Next change (Alt+Down / {}+D)",
+        primary_key_name()
+    )));
 
     let nav_box = GtkBox::new(Orientation::Horizontal, 0);
     nav_box.add_css_class("linked");
@@ -327,9 +333,9 @@ pub(super) fn build_diff_view(
 
     // Undo/Redo buttons
     let undo_btn = Button::from_icon_name("edit-undo-symbolic");
-    undo_btn.set_tooltip_text(Some("Undo (Ctrl+Z)"));
+    undo_btn.set_tooltip_text(Some(&format!("Undo ({}+Z)", primary_key_name())));
     let redo_btn = Button::from_icon_name("edit-redo-symbolic");
-    redo_btn.set_tooltip_text(Some("Redo (Ctrl+Shift+Z)"));
+    redo_btn.set_tooltip_text(Some(&format!("Redo ({}+Shift+Z)", primary_key_name())));
     let undo_redo_box = GtkBox::new(Orientation::Horizontal, 0);
     undo_redo_box.add_css_class("linked");
     undo_redo_box.append(&undo_btn);
@@ -414,8 +420,10 @@ pub(super) fn build_diff_view(
     // Text filter toggles
     let blank_toggle = ToggleButton::with_label("Blanks");
     blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
+    blank_toggle.set_active(ignore_blanks.get());
     let ws_toggle = ToggleButton::with_label("Spaces");
     ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
+    ws_toggle.set_active(ignore_whitespace.get());
     if any_binary {
         blank_toggle.set_sensitive(false);
         ws_toggle.set_sensitive(false);
@@ -427,7 +435,10 @@ pub(super) fn build_diff_view(
     filter_box.append(&ws_toggle);
 
     let patch_btn = Button::from_icon_name("document-save-as-symbolic");
-    patch_btn.set_tooltip_text(Some("Export patch (Ctrl+Shift+P)"));
+    patch_btn.set_tooltip_text(Some(&format!(
+        "Export patch ({}+Shift+P)",
+        primary_key_name()
+    )));
     if any_binary {
         patch_btn.set_sensitive(false);
     }
@@ -439,7 +450,7 @@ pub(super) fn build_diff_view(
     toolbar.append(&patch_btn);
     toolbar.append(&swap_btn);
     let prefs_btn = Button::from_icon_name("preferences-system-symbolic");
-    prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     prefs_btn.set_action_name(Some("win.prefs"));
     toolbar.append(&prefs_btn);
 
@@ -847,7 +858,7 @@ pub(super) fn build_diff_view(
 
     // ── Find bar ──────────────────────────────────────────────────
     let find_entry = Entry::new();
-    find_entry.set_placeholder_text(Some("Find (Ctrl+F)"));
+    find_entry.set_placeholder_text(Some(&format!("Find ({}+F)", primary_key_name())));
     find_entry.set_hexpand(true);
 
     let replace_entry = Entry::new();
@@ -1393,7 +1404,7 @@ pub(super) fn build_diff_view(
                     k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-right"),
                     _ => None,
                 }
-            } else if mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK) {
+            } else if has_primary_modifier(mods) {
                 if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
                     && (key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P)
                 {

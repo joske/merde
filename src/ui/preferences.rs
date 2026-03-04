@@ -12,6 +12,19 @@ fn apply_settings_to_views(window: &gtk4::Window, settings: &Settings) {
             sv.set_highlight_current_line(settings.highlight_current_line);
             sv.set_wrap_mode(settings.wrap_mode_gtk());
             sv.set_tab_width(settings.tab_width);
+            sv.set_insert_spaces_instead_of_tabs(settings.insert_spaces);
+            {
+                let drawer = sv.space_drawer();
+                if settings.show_whitespace {
+                    drawer.set_types_for_locations(
+                        sourceview5::SpaceLocationFlags::ALL,
+                        sourceview5::SpaceTypeFlags::ALL,
+                    );
+                    drawer.set_enable_matrix(true);
+                } else {
+                    drawer.set_enable_matrix(false);
+                }
+            }
             // Update conflict mark attributes for the new scheme colours.
             setup_conflict_marks(&sv);
             let buf: TextBuffer = sv.buffer();
@@ -145,6 +158,43 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
     let tab_spin = gtk4::SpinButton::new(Some(&tab_adj), 1.0, 0);
     content.append(&make_pref_row("Tab width", &tab_spin));
 
+    // Insert spaces instead of tabs
+    let insert_spaces_switch = gtk4::Switch::new();
+    insert_spaces_switch.set_active(s.insert_spaces);
+    insert_spaces_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row(
+        "Insert spaces instead of tabs",
+        &insert_spaces_switch,
+    ));
+
+    // Show whitespace
+    let show_ws_switch = gtk4::Switch::new();
+    show_ws_switch.set_active(s.show_whitespace);
+    show_ws_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row("Show whitespace", &show_ws_switch));
+
+    // ── Comparison section ──
+    let cmp_header = Label::new(Some("Comparison"));
+    cmp_header.set_halign(gtk4::Align::Start);
+    cmp_header.set_margin_start(12);
+    cmp_header.set_margin_top(16);
+    cmp_header.set_margin_bottom(4);
+    cmp_header.add_css_class("heading");
+    content.append(&cmp_header);
+
+    let ignore_blanks_switch = gtk4::Switch::new();
+    ignore_blanks_switch.set_active(s.ignore_blank_lines);
+    ignore_blanks_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row("Ignore blank lines", &ignore_blanks_switch));
+
+    let ignore_ws_switch = gtk4::Switch::new();
+    ignore_ws_switch.set_active(s.ignore_whitespace);
+    ignore_ws_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row(
+        "Ignore whitespace differences",
+        &ignore_ws_switch,
+    ));
+
     // ── Directory section ──
     let dir_header = Label::new(Some("Directory"));
     dir_header.set_halign(gtk4::Align::Start);
@@ -249,6 +299,10 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
         let fe = filter_entries.clone();
         let hs = hidden_switch.clone();
         let wns = wrap_nav_switch.clone();
+        let iss = insert_spaces_switch.clone();
+        let sws = show_ws_switch.clone();
+        let ibs = ignore_blanks_switch.clone();
+        let iwss = ignore_ws_switch.clone();
         Rc::new(move || {
             let mut s = st.borrow_mut();
             if let Some(fd) = fb.font_desc() {
@@ -266,8 +320,12 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
                 _ => "none".into(),
             };
             s.tab_width = ts.value() as u32;
+            s.insert_spaces = iss.is_active();
+            s.show_whitespace = sws.is_active();
             s.hide_hidden_files = hs.is_active();
             s.wrap_around_navigation = wns.is_active();
+            s.ignore_blank_lines = ibs.is_active();
+            s.ignore_whitespace = iwss.is_active();
             s.dir_filters = fe
                 .borrow()
                 .iter()
@@ -312,6 +370,22 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
         let a = apply.clone();
         wrap_nav_switch.connect_active_notify(move |_| a());
     }
+    {
+        let a = apply.clone();
+        insert_spaces_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        show_ws_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        ignore_blanks_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        ignore_ws_switch.connect_active_notify(move |_| a());
+    }
 
     // Also save filters on close (they don't need live-apply)
     {
@@ -322,17 +396,138 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
         });
     }
 
-    // Close button
+    // Bottom buttons row
+    let bottom_row = GtkBox::new(Orientation::Horizontal, 8);
+    bottom_row.set_margin_top(12);
+    bottom_row.set_margin_start(12);
+    bottom_row.set_margin_end(12);
+    bottom_row.set_margin_bottom(8);
+
+    let shortcuts_btn = Button::with_label("Keyboard Shortcuts");
+    {
+        let w = win.clone();
+        shortcuts_btn.connect_clicked(move |_| show_shortcuts_dialog(&w));
+    }
+    bottom_row.append(&shortcuts_btn);
+
     let close_btn = Button::with_label("Close");
     close_btn.set_halign(gtk4::Align::End);
-    close_btn.set_margin_top(12);
-    close_btn.set_margin_end(12);
-    close_btn.set_margin_bottom(8);
+    close_btn.set_hexpand(true);
     {
         let w = win.clone();
         close_btn.connect_clicked(move |_| w.close());
     }
-    content.append(&close_btn);
+    bottom_row.append(&close_btn);
+
+    content.append(&bottom_row);
+
+    let scroll = ScrolledWindow::builder()
+        .hscrollbar_policy(PolicyType::Never)
+        .child(&content)
+        .build();
+    win.set_child(Some(&scroll));
+    win.present();
+}
+
+fn make_shortcut_row(shortcut: &str, description: &str) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 12);
+    row.set_margin_start(12);
+    row.set_margin_end(12);
+    row.set_margin_top(2);
+    row.set_margin_bottom(2);
+    let key_label = Label::new(Some(shortcut));
+    key_label.set_halign(gtk4::Align::End);
+    key_label.set_width_chars(20);
+    key_label.add_css_class("monospace");
+    let desc_label = Label::new(Some(description));
+    desc_label.set_halign(gtk4::Align::Start);
+    desc_label.set_hexpand(true);
+    row.append(&key_label);
+    row.append(&desc_label);
+    row
+}
+
+fn add_shortcuts_section(content: &GtkBox, title: &str, shortcuts: &[(String, &str)]) {
+    let header = Label::new(Some(title));
+    header.set_halign(gtk4::Align::Start);
+    header.set_margin_start(12);
+    header.set_margin_top(12);
+    header.set_margin_bottom(4);
+    header.add_css_class("heading");
+    content.append(&header);
+
+    for (key, desc) in shortcuts {
+        content.append(&make_shortcut_row(key, desc));
+    }
+}
+
+fn show_shortcuts_dialog(parent: &gtk4::Window) {
+    let win = gtk4::Window::builder()
+        .title("Keyboard Shortcuts")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(420)
+        .default_height(500)
+        .build();
+
+    let w = win.clone();
+    let key_ctl = EventControllerKey::new();
+    key_ctl.connect_key_pressed(move |_, key, _, _| {
+        if key == gtk4::gdk::Key::Escape {
+            w.close();
+            return gtk4::glib::Propagation::Stop;
+        }
+        gtk4::glib::Propagation::Proceed
+    });
+    win.add_controller(key_ctl);
+
+    let m = primary_key_name();
+    let content = GtkBox::new(Orientation::Vertical, 0);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+
+    add_shortcuts_section(
+        &content,
+        "Navigation",
+        &[
+            (format!("{m}+E / Alt+Up"), "Previous change"),
+            (format!("{m}+D / Alt+Down"), "Next change"),
+            (format!("{m}+J"), "Previous conflict (merge)"),
+            (format!("{m}+K"), "Next conflict (merge)"),
+        ],
+    );
+    add_shortcuts_section(
+        &content,
+        "Editing",
+        &[
+            (format!("{m}+Z"), "Undo"),
+            (format!("{m}+Shift+Z"), "Redo"),
+            (format!("{m}+S"), "Save"),
+            ("Alt+Left".into(), "Copy left"),
+            ("Alt+Right".into(), "Copy right"),
+        ],
+    );
+    add_shortcuts_section(
+        &content,
+        "Search",
+        &[
+            (format!("{m}+F"), "Find"),
+            (format!("{m}+H"), "Find & Replace"),
+            ("F3".into(), "Find next"),
+            ("Shift+F3".into(), "Find previous"),
+            (format!("{m}+L"), "Go to line"),
+        ],
+    );
+    add_shortcuts_section(
+        &content,
+        "Other",
+        &[
+            (format!("{m}+Shift+P"), "Export patch"),
+            (format!("{m}+,"), "Preferences"),
+            (format!("{m}+W"), "Close tab"),
+            (format!("{m}+Q"), "Quit"),
+        ],
+    );
 
     let scroll = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)

@@ -1542,6 +1542,15 @@ pub(super) fn make_diff_pane(
     sv.set_show_line_numbers(settings.show_line_numbers);
     sv.set_highlight_current_line(settings.highlight_current_line);
     sv.set_tab_width(settings.tab_width);
+    sv.set_insert_spaces_instead_of_tabs(settings.insert_spaces);
+    if settings.show_whitespace {
+        let drawer = sv.space_drawer();
+        drawer.set_types_for_locations(
+            sourceview5::SpaceLocationFlags::ALL,
+            sourceview5::SpaceTypeFlags::ALL,
+        );
+        drawer.set_enable_matrix(true);
+    }
     sv.set_hexpand(true);
     update_font_css(settings);
     apply_scheme_css(settings);

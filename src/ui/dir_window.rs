@@ -693,7 +693,7 @@ pub(super) fn build_dir_window(
     let dir_swap_btn = Button::from_icon_name("object-flip-horizontal-symbolic");
     dir_swap_btn.set_tooltip_text(Some("Swap panes"));
     let dir_prefs_btn = Button::from_icon_name("preferences-system-symbolic");
-    dir_prefs_btn.set_tooltip_text(Some("Preferences (Ctrl+,)"));
+    dir_prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     dir_prefs_btn.set_action_name(Some("win.prefs"));
 
     dir_toolbar.append(&dir_copy_box);
@@ -1505,17 +1505,17 @@ pub(super) fn build_dir_window(
     // Register keyboard accelerators
     if let Some(gtk_app) = window.application() {
         // Diff navigation (used by file diff tabs)
-        gtk_app.set_accels_for_action("diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
-        gtk_app.set_accels_for_action("diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
-        gtk_app.set_accels_for_action("diff.find", &["<Ctrl>f"]);
-        gtk_app.set_accels_for_action("diff.find-replace", &["<Ctrl>h"]);
+        set_platform_accels(&gtk_app, "diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
+        set_platform_accels(&gtk_app, "diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
+        set_platform_accels(&gtk_app, "diff.find", &["<Ctrl>f"]);
+        set_platform_accels(&gtk_app, "diff.find-replace", &["<Ctrl>h"]);
         gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
         gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
-        gtk_app.set_accels_for_action("diff.go-to-line", &["<Ctrl>l"]);
-        gtk_app.set_accels_for_action("diff.export-patch", &["<Ctrl><Shift>p"]);
-        gtk_app.set_accels_for_action("diff.save", &["<Ctrl>s"]);
-        gtk_app.set_accels_for_action("win.prefs", &["<Ctrl>comma"]);
-        gtk_app.set_accels_for_action("win.close-tab", &["<Ctrl>w"]);
+        set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);
+        set_platform_accels(&gtk_app, "diff.export-patch", &["<Ctrl><Shift>p"]);
+        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
+        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
+        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
         // Note: dir.folder-copy-left/right/delete are NOT registered as app accels
         // because they would fire even on file-diff tabs. Instead, a capture-phase
         // key handler on dir_tab dispatches them (see below dir_tab setup).
