@@ -18,8 +18,9 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 - **Find & Replace** within panes
 - **Go to line** (Ctrl+L)
 - **Undo / Redo**
-- **Chunk navigation** with keyboard shortcuts
-- **Chunk map** — visual overview strips alongside each pane
+- **Chunk navigation** with keyboard shortcuts (with optional wrap-around)
+- **Synchronized scrolling** — chunk-aware vertical sync keeps corresponding lines aligned
+- **Chunk map** — visual overview strips alongside each pane with viewport indicator
 - **Patch export** (unified diff format)
 - **Swap panes**
 - **Custom pane labels** via `-L` flag
@@ -126,6 +127,7 @@ git mergetool
 | **Ignore Blank Lines**            | Yes                   | Yes                            | No                                                |
 | **Text Wrapping Options**         | Yes                   | Yes                            | No                                                |
 | **File Monitoring / Auto-reload** | Yes                   | Yes                            | No                                                |
+| **Synchronized Scrolling**        | Yes                   | Yes                            | No                                                |
 | **Chunk Map (minimap)**           | Yes                   | Yes                            | No                                                |
 | **Conflict Marker Detection**     | Yes                   | No                             | No                                                |
 | **Folder Filters**                | Yes                   | Yes                            | N/A                                               |
