@@ -242,8 +242,8 @@ pub(super) fn build_diff_view(
     }
 
     // Text filter state (created early so connect_changed can use it)
-    let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(false));
-    let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(settings.borrow().ignore_blank_lines));
+    let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(settings.borrow().ignore_whitespace));
 
     // Scroll synchronization
     setup_scroll_sync(
@@ -414,8 +414,10 @@ pub(super) fn build_diff_view(
     // Text filter toggles
     let blank_toggle = ToggleButton::with_label("Blanks");
     blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
+    blank_toggle.set_active(ignore_blanks.get());
     let ws_toggle = ToggleButton::with_label("Spaces");
     ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
+    ws_toggle.set_active(ignore_whitespace.get());
     if any_binary {
         blank_toggle.set_sensitive(false);
         ws_toggle.set_sensitive(false);

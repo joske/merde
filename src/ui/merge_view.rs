@@ -635,8 +635,8 @@ fn build_merge_view(
     }
 
     // Text filter state
-    let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(false));
-    let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
+    let ignore_blanks: Rc<Cell<bool>> = Rc::new(Cell::new(settings.borrow().ignore_blank_lines));
+    let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(settings.borrow().ignore_whitespace));
 
     // Scroll sync
     setup_scroll_sync_3way(
@@ -911,8 +911,10 @@ fn build_merge_view(
     // Text filter toggles
     let blank_toggle = ToggleButton::with_label("Blanks");
     blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
+    blank_toggle.set_active(ignore_blanks.get());
     let ws_toggle = ToggleButton::with_label("Spaces");
     ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
+    ws_toggle.set_active(ignore_whitespace.get());
     let filter_box = GtkBox::new(Orientation::Horizontal, 0);
     filter_box.add_css_class("linked");
     filter_box.append(&blank_toggle);

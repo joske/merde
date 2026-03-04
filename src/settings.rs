@@ -11,8 +11,12 @@ pub struct Settings {
     pub wrap_mode: String,
     pub tab_width: u32,
     pub highlight_current_line: bool,
+    pub insert_spaces: bool,
+    pub show_whitespace: bool,
     pub hide_hidden_files: bool,
     pub wrap_around_navigation: bool,
+    pub ignore_blank_lines: bool,
+    pub ignore_whitespace: bool,
     pub dir_filters: Vec<String>,
 }
 
@@ -25,8 +29,12 @@ impl Default for Settings {
             wrap_mode: "none".to_string(),
             tab_width: 4,
             highlight_current_line: true,
+            insert_spaces: false,
+            show_whitespace: false,
             hide_hidden_files: true,
             wrap_around_navigation: false,
+            ignore_blank_lines: false,
+            ignore_whitespace: false,
             dir_filters: vec![
                 ".git".into(),
                 ".svn".into(),
@@ -116,6 +124,10 @@ mod tests {
             original.wrap_around_navigation,
             parsed.wrap_around_navigation
         );
+        assert_eq!(original.insert_spaces, parsed.insert_spaces);
+        assert_eq!(original.show_whitespace, parsed.show_whitespace);
+        assert_eq!(original.ignore_blank_lines, parsed.ignore_blank_lines);
+        assert_eq!(original.ignore_whitespace, parsed.ignore_whitespace);
         assert_eq!(original.dir_filters, parsed.dir_filters);
     }
 

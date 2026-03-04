@@ -12,6 +12,19 @@ fn apply_settings_to_views(window: &gtk4::Window, settings: &Settings) {
             sv.set_highlight_current_line(settings.highlight_current_line);
             sv.set_wrap_mode(settings.wrap_mode_gtk());
             sv.set_tab_width(settings.tab_width);
+            sv.set_insert_spaces_instead_of_tabs(settings.insert_spaces);
+            {
+                let drawer = sv.space_drawer();
+                if settings.show_whitespace {
+                    drawer.set_types_for_locations(
+                        sourceview5::SpaceLocationFlags::ALL,
+                        sourceview5::SpaceTypeFlags::ALL,
+                    );
+                    drawer.set_enable_matrix(true);
+                } else {
+                    drawer.set_enable_matrix(false);
+                }
+            }
             // Update conflict mark attributes for the new scheme colours.
             setup_conflict_marks(&sv);
             let buf: TextBuffer = sv.buffer();
@@ -145,6 +158,43 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
     let tab_spin = gtk4::SpinButton::new(Some(&tab_adj), 1.0, 0);
     content.append(&make_pref_row("Tab width", &tab_spin));
 
+    // Insert spaces instead of tabs
+    let insert_spaces_switch = gtk4::Switch::new();
+    insert_spaces_switch.set_active(s.insert_spaces);
+    insert_spaces_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row(
+        "Insert spaces instead of tabs",
+        &insert_spaces_switch,
+    ));
+
+    // Show whitespace
+    let show_ws_switch = gtk4::Switch::new();
+    show_ws_switch.set_active(s.show_whitespace);
+    show_ws_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row("Show whitespace", &show_ws_switch));
+
+    // ── Comparison section ──
+    let cmp_header = Label::new(Some("Comparison"));
+    cmp_header.set_halign(gtk4::Align::Start);
+    cmp_header.set_margin_start(12);
+    cmp_header.set_margin_top(16);
+    cmp_header.set_margin_bottom(4);
+    cmp_header.add_css_class("heading");
+    content.append(&cmp_header);
+
+    let ignore_blanks_switch = gtk4::Switch::new();
+    ignore_blanks_switch.set_active(s.ignore_blank_lines);
+    ignore_blanks_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row("Ignore blank lines", &ignore_blanks_switch));
+
+    let ignore_ws_switch = gtk4::Switch::new();
+    ignore_ws_switch.set_active(s.ignore_whitespace);
+    ignore_ws_switch.set_valign(gtk4::Align::Center);
+    content.append(&make_pref_row(
+        "Ignore whitespace differences",
+        &ignore_ws_switch,
+    ));
+
     // ── Directory section ──
     let dir_header = Label::new(Some("Directory"));
     dir_header.set_halign(gtk4::Align::Start);
@@ -249,6 +299,10 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
         let fe = filter_entries.clone();
         let hs = hidden_switch.clone();
         let wns = wrap_nav_switch.clone();
+        let iss = insert_spaces_switch.clone();
+        let sws = show_ws_switch.clone();
+        let ibs = ignore_blanks_switch.clone();
+        let iwss = ignore_ws_switch.clone();
         Rc::new(move || {
             let mut s = st.borrow_mut();
             if let Some(fd) = fb.font_desc() {
@@ -266,8 +320,12 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
                 _ => "none".into(),
             };
             s.tab_width = ts.value() as u32;
+            s.insert_spaces = iss.is_active();
+            s.show_whitespace = sws.is_active();
             s.hide_hidden_files = hs.is_active();
             s.wrap_around_navigation = wns.is_active();
+            s.ignore_blank_lines = ibs.is_active();
+            s.ignore_whitespace = iwss.is_active();
             s.dir_filters = fe
                 .borrow()
                 .iter()
@@ -311,6 +369,22 @@ pub(super) fn show_preferences(parent: &ApplicationWindow, settings: &Rc<RefCell
     {
         let a = apply.clone();
         wrap_nav_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        insert_spaces_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        show_ws_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        ignore_blanks_switch.connect_active_notify(move |_| a());
+    }
+    {
+        let a = apply.clone();
+        ignore_ws_switch.connect_active_notify(move |_| a());
     }
 
     // Also save filters on close (they don't need live-apply)
