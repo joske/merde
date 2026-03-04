@@ -246,7 +246,16 @@ pub(super) fn build_diff_view(
     let ignore_whitespace: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     // Scroll synchronization
-    setup_scroll_sync(&left_pane.scroll, &right_pane.scroll, &gutter);
+    setup_scroll_sync(
+        &left_pane.scroll,
+        &right_pane.scroll,
+        &left_pane.text_view,
+        &right_pane.text_view,
+        &left_buf,
+        &right_buf,
+        &chunks,
+        &gutter,
+    );
 
     // ── Toolbar with chunk navigation ───────────────────────────
     let current_chunk: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));

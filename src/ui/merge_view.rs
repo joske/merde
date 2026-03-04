@@ -82,23 +82,139 @@ fn refresh_merge_diffs(
     });
 }
 
+/// 3-way scroll sync using chunk-based mapping (matching meld's influence-through-middle).
+///
+/// `left_chunks`: left(A) vs middle(B).  `right_chunks`: middle(A) vs right(B).
+#[allow(clippy::too_many_arguments)]
 fn setup_scroll_sync_3way(
     left_scroll: &ScrolledWindow,
     middle_scroll: &ScrolledWindow,
     right_scroll: &ScrolledWindow,
+    left_tv: &TextView,
+    middle_tv: &TextView,
+    right_tv: &TextView,
+    left_buf: &TextBuffer,
+    middle_buf: &TextBuffer,
+    right_buf: &TextBuffer,
+    left_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
+    right_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
     left_gutter: &DrawingArea,
     right_gutter: &DrawingArea,
 ) {
     let syncing = Rc::new(Cell::new(false));
 
-    // Redraw gutters when any side scrolls (no vertical sync — each side scrolls independently)
-    for scroll in [left_scroll, middle_scroll, right_scroll] {
+    // Vertical: Left → Middle (left_chunks), then Middle → Right (right_chunks)
+    {
+        let ms = middle_scroll.clone();
+        let rs = right_scroll.clone();
+        let ltv = left_tv.clone();
+        let mtv = middle_tv.clone();
+        let rtv = right_tv.clone();
+        let mb = middle_buf.clone();
+        let rb = right_buf.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
         let lg = left_gutter.clone();
         let rg = right_gutter.clone();
-        scroll.vadjustment().connect_value_changed(move |_| {
+        let s = syncing.clone();
+        left_scroll.vadjustment().connect_value_changed(move |adj| {
             lg.queue_draw();
             rg.queue_draw();
+            if !s.get() {
+                s.set(true);
+                sync_vscroll(adj, &ltv, &ms.vadjustment(), &mtv, &mb, &lch.borrow(), true);
+                sync_vscroll(
+                    &ms.vadjustment(),
+                    &mtv,
+                    &rs.vadjustment(),
+                    &rtv,
+                    &rb,
+                    &rch.borrow(),
+                    true,
+                );
+                s.set(false);
+            }
         });
+    }
+
+    // Vertical: Middle → Left (left_chunks) + Right (right_chunks)
+    {
+        let ls = left_scroll.clone();
+        let rs = right_scroll.clone();
+        let ltv = left_tv.clone();
+        let mtv = middle_tv.clone();
+        let rtv = right_tv.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let lg = left_gutter.clone();
+        let rg = right_gutter.clone();
+        let s = syncing.clone();
+        middle_scroll
+            .vadjustment()
+            .connect_value_changed(move |adj| {
+                lg.queue_draw();
+                rg.queue_draw();
+                if !s.get() {
+                    s.set(true);
+                    sync_vscroll(
+                        adj,
+                        &mtv,
+                        &ls.vadjustment(),
+                        &ltv,
+                        &lb,
+                        &lch.borrow(),
+                        false,
+                    );
+                    sync_vscroll(adj, &mtv, &rs.vadjustment(), &rtv, &rb, &rch.borrow(), true);
+                    s.set(false);
+                }
+            });
+    }
+
+    // Vertical: Right → Middle (right_chunks), then Middle → Left (left_chunks)
+    {
+        let ls = left_scroll.clone();
+        let ms = middle_scroll.clone();
+        let ltv = left_tv.clone();
+        let mtv = middle_tv.clone();
+        let rtv = right_tv.clone();
+        let lb = left_buf.clone();
+        let mb = middle_buf.clone();
+        let lch = left_chunks.clone();
+        let rch = right_chunks.clone();
+        let lg = left_gutter.clone();
+        let rg = right_gutter.clone();
+        let s = syncing.clone();
+        right_scroll
+            .vadjustment()
+            .connect_value_changed(move |adj| {
+                lg.queue_draw();
+                rg.queue_draw();
+                if !s.get() {
+                    s.set(true);
+                    sync_vscroll(
+                        adj,
+                        &rtv,
+                        &ms.vadjustment(),
+                        &mtv,
+                        &mb,
+                        &rch.borrow(),
+                        false,
+                    );
+                    sync_vscroll(
+                        &ms.vadjustment(),
+                        &mtv,
+                        &ls.vadjustment(),
+                        &ltv,
+                        &lb,
+                        &lch.borrow(),
+                        false,
+                    );
+                    s.set(false);
+                }
+            });
     }
 
     // Horizontal: Left → Middle, Right
@@ -527,6 +643,14 @@ fn build_merge_view(
         &left_pane.scroll,
         &middle_pane.scroll,
         &right_pane.scroll,
+        &left_pane.text_view,
+        &middle_pane.text_view,
+        &right_pane.text_view,
+        &left_buf,
+        &middle_buf,
+        &right_buf,
+        &left_chunks,
+        &right_chunks,
         &left_gutter,
         &right_gutter,
     );
