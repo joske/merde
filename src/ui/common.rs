@@ -665,21 +665,21 @@ pub(super) fn remove_diff_tags(buf: &TextBuffer) {
 
 fn stroke_insert() -> (f64, f64, f64, f64) {
     if is_dark_scheme() {
-        (0.141, 0.333, 0.082, 0.7) // #245515
+        (0.30, 0.65, 0.18, 0.8) // bright green
     } else {
         (0.647, 1.0, 0.298, 0.7) // #a5ff4c
     }
 }
 fn stroke_replace() -> (f64, f64, f64, f64) {
     if is_dark_scheme() {
-        (0.0, 0.325, 0.651, 0.7) // #0053a6
+        (0.20, 0.50, 0.90, 0.8) // bright blue
     } else {
         (0.396, 0.698, 1.0, 0.7) // #65b2ff
     }
 }
 fn stroke_conflict() -> (f64, f64, f64, f64) {
     if is_dark_scheme() {
-        (0.675, 0.231, 0.224, 0.7) // #ac3b39
+        (0.90, 0.35, 0.30, 0.8) // bright red
     } else {
         (1.0, 0.31, 0.298, 0.7) // #ff4f4c
     }
@@ -687,14 +687,14 @@ fn stroke_conflict() -> (f64, f64, f64, f64) {
 
 fn band_insert() -> (f64, f64, f64) {
     if is_dark_scheme() {
-        (0.141, 0.333, 0.082) // #245515
+        (0.30, 0.65, 0.18) // bright green
     } else {
         (0.647, 1.0, 0.298) // #a5ff4c
     }
 }
 fn band_replace() -> (f64, f64, f64) {
     if is_dark_scheme() {
-        (0.0, 0.325, 0.651) // #0053a6
+        (0.20, 0.50, 0.90) // bright blue
     } else {
         (0.396, 0.698, 1.0) // #65b2ff
     }
@@ -702,7 +702,7 @@ fn band_replace() -> (f64, f64, f64) {
 
 fn band_conflict() -> (f64, f64, f64) {
     if is_dark_scheme() {
-        (0.675, 0.231, 0.224) // #ac3b39
+        (0.90, 0.35, 0.30) // bright red
     } else {
         (1.0, 0.31, 0.298) // #ff4f4c
     }
@@ -716,21 +716,21 @@ fn filler_replace() -> (f64, f64, f64) {
 }
 fn inline_changed() -> &'static str {
     if is_dark_scheme() {
-        "#6e6e32" // muted yellow
+        "#8a8a3c" // visible yellow
     } else {
         "#c8c864"
     }
 }
 fn inline_deleted() -> &'static str {
     if is_dark_scheme() {
-        "#6e3232" // muted red
+        "#8a3c3c" // visible red
     } else {
         "#ff9696"
     }
 }
 fn inline_inserted() -> &'static str {
     if is_dark_scheme() {
-        "#326e32" // muted green
+        "#3c8a3c" // visible green
     } else {
         "#64c864"
     }
@@ -738,14 +738,14 @@ fn inline_inserted() -> &'static str {
 
 fn search_match_bg() -> &'static str {
     if is_dark_scheme() {
-        "#886a08"
+        "#9a7a10"
     } else {
         "#ffe066"
     }
 }
 fn search_current_bg() -> &'static str {
     if is_dark_scheme() {
-        "#a05000"
+        "#b86010"
     } else {
         "#ff9632"
     }
@@ -755,21 +755,21 @@ fn search_current_bg() -> &'static str {
 // (drawn behind text by the text view, matching Meld's rendering approach).
 fn chunk_bg_insert() -> &'static str {
     if is_dark_scheme() {
-        "#123806" // meld-dark insert
+        "#1e4e0e" // visible dark green
     } else {
         "#b0e080" // saturated green (readable with muted-text schemes)
     }
 }
 fn chunk_bg_replace() -> &'static str {
     if is_dark_scheme() {
-        "#003266" // meld-dark replace
+        "#0e2e6e" // visible dark blue
     } else {
         "#a0c8ee" // saturated blue
     }
 }
 fn chunk_bg_conflict() -> &'static str {
     if is_dark_scheme() {
-        "#501c19" // dark maroon (meld #7a2a28 is too bright for readable text)
+        "#6e2420" // visible dark red
     } else {
         "#f09090" // saturated red
     }
