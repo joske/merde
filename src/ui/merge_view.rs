@@ -3,13 +3,13 @@ use super::*;
 
 // ─── 3-way merge view ───────────────────────────────────────────────────────
 
-struct MergeViewResult {
-    widget: GtkBox,
-    left_buf: TextBuffer,
-    middle_buf: TextBuffer,
-    right_buf: TextBuffer,
-    middle_save: Button,
-    action_group: gio::SimpleActionGroup,
+pub(super) struct MergeViewResult {
+    pub(super) widget: GtkBox,
+    pub(super) left_buf: TextBuffer,
+    pub(super) middle_buf: TextBuffer,
+    pub(super) right_buf: TextBuffer,
+    pub(super) middle_save: Button,
+    pub(super) action_group: gio::SimpleActionGroup,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -288,7 +288,7 @@ fn conflict_at_cursor(buf: &TextBuffer, cursor_line: usize) -> Option<usize> {
     super::merge_state::conflict_at_cursor(&text, cursor_line)
 }
 
-fn build_merge_view(
+pub(super) fn build_merge_view(
     left_path: &Path,
     middle_path: &Path,
     right_path: &Path,
@@ -2778,7 +2778,7 @@ pub(super) fn build_merge_window(
         });
     }
 
-    // Window title
+    // Window title / tab title
     let left_name = left_path.file_name().map_or_else(
         || left_path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -2793,12 +2793,20 @@ pub(super) fn build_merge_window(
     );
     let title = format!("{left_name} — {middle_name} — {right_name}");
 
+    // ── Notebook (tabs) ────────────────────────────────────────────
+    let notebook = Notebook::new();
+    notebook.set_scrollable(true);
+    notebook.append_page(&mv.widget, Some(&Label::new(Some(&title))));
+
+    // Track open file tabs (New Comparison tabs that open file diffs)
+    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(&title)
+        .title("Mergers")
         .default_width(1200)
         .default_height(600)
-        .child(&mv.widget)
+        .child(&notebook)
         .build();
     window.insert_action_group("diff", Some(&mv.action_group));
 
@@ -2813,21 +2821,60 @@ pub(super) fn build_merge_window(
         });
         win_actions.add_action(&action);
     }
-    // Close-tab action (Ctrl+W) — close merge window
+    // Close-tab action (Ctrl+W) — close current tab or window
     {
         let action = gio::SimpleAction::new("close-tab", None);
+        let nb = notebook.clone();
         let w = window.clone();
-        action.connect_activate(move |_, _| w.close());
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| match nb.current_page() {
+            // Page 0 is the merge view — close entire window
+            Some(0) | None => w.close(),
+            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
+        });
         win_actions.add_action(&action);
     }
+    // New comparison (Ctrl+N)
+    {
+        let action = gio::SimpleAction::new("new-comparison", None);
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| {
+            build_new_comparison_tab(&nb, &st, &tabs);
+        });
+        win_actions.add_action(&action);
+    }
+    add_tab_navigation_actions(&win_actions, &notebook);
     window.insert_action_group("win", Some(&win_actions));
+    add_tab_navigation_keys(&window);
 
     // Unsaved-changes guard on window close button
     {
         let ms = mv.middle_save.clone();
         let save_path = middle_path.display().to_string();
+        let tabs = open_tabs.clone();
         window.connect_close_request(move |w| {
-            handle_close_request(w, vec![(save_path.clone(), ms.clone())])
+            // Collect unsaved from the merge tab's middle save button
+            let mut unsaved: Vec<(String, Button)> = Vec::new();
+            if ms.is_sensitive() {
+                unsaved.push((save_path.clone(), ms.clone()));
+            }
+            // Also collect from any file diff tabs opened via New Comparison
+            for t in tabs.borrow().iter() {
+                if t.left_save.is_sensitive() {
+                    unsaved.push((t.left_path.borrow().clone(), t.left_save.clone()));
+                }
+                if t.right_save.is_sensitive() {
+                    unsaved.push((t.right_path.borrow().clone(), t.right_save.clone()));
+                }
+            }
+            if unsaved.is_empty() {
+                return gtk4::glib::Propagation::Proceed;
+            }
+            let w2 = w.clone();
+            confirm_unsaved_dialog(w, unsaved, move || w2.close());
+            gtk4::glib::Propagation::Stop
         });
     }
 
@@ -2848,6 +2895,7 @@ pub(super) fn build_merge_window(
         set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
+        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
     }
 
     window.connect_destroy(move |_| {

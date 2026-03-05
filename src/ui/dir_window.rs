@@ -385,14 +385,20 @@ fn make_field_factory(is_left: bool, field_idx: usize) -> SignalListItemFactory 
     factory
 }
 
-// ─── Directory comparison window ───────────────────────────────────────────
+// ─── Directory comparison tab ──────────────────────────────────────────────
 
-pub(super) fn build_dir_window(
-    app: &Application,
+/// Build the directory comparison widget and all its state (tree model, file
+/// watcher, copy/delete handlers, context menus). The widget can be embedded
+/// as a tab in an existing notebook or wrapped in its own window.
+///
+/// Returns `(dir_tab, watcher_alive, left_view, title)`.
+pub(super) fn build_dir_tab(
     left_dir: std::path::PathBuf,
     right_dir: std::path::PathBuf,
     settings: Rc<RefCell<Settings>>,
-) {
+    notebook: &Notebook,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+) -> (GtkBox, Rc<Cell<bool>>, ColumnView, String) {
     let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
     let right_dir = Rc::new(RefCell::new(right_dir.to_string_lossy().into_owned()));
 
@@ -1308,15 +1314,7 @@ pub(super) fn build_dir_window(
         dir_tab.add_controller(key_ctl);
     }
 
-    // ── Notebook (tabs) ────────────────────────────────────────────
-    let notebook = Notebook::new();
-    notebook.set_scrollable(true);
-    notebook.append_page(&dir_tab, Some(&Label::new(Some("Directory"))));
-
-    // Open file tabs tracking
-    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
-
-    // Add "folder-open-diff" action now that notebook and open_tabs exist
+    // Add "folder-open-diff" action (uses the passed-in notebook and open_tabs)
     {
         let action = gio::SimpleAction::new("folder-open-diff", None);
         let get_row = get_selected_row.clone();
@@ -1557,7 +1555,7 @@ pub(super) fn build_dir_window(
         });
     }
 
-    // Window title
+    // Build title
     let left_name = Path::new(left_dir.borrow().as_str())
         .file_name()
         .map_or_else(
@@ -1572,9 +1570,28 @@ pub(super) fn build_dir_window(
         );
     let title = format!("{left_name} — {right_name}");
 
+    (dir_tab, dir_watcher_alive, left_view, title)
+}
+
+// ─── Directory comparison window ───────────────────────────────────────────
+
+pub(super) fn build_dir_window(
+    app: &Application,
+    left_dir: std::path::PathBuf,
+    right_dir: std::path::PathBuf,
+    settings: Rc<RefCell<Settings>>,
+) {
+    let notebook = Notebook::new();
+    notebook.set_scrollable(true);
+    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let (dir_tab, dir_watcher_alive, left_view, title) =
+        build_dir_tab(left_dir, right_dir, settings.clone(), &notebook, &open_tabs);
+    notebook.append_page(&dir_tab, Some(&Label::new(Some(&title))));
+
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(&title)
+        .title("Mergers")
         .default_width(900)
         .default_height(600)
         .child(&notebook)
@@ -1603,6 +1620,17 @@ pub(super) fn build_dir_window(
         });
         win_actions.add_action(&action);
     }
+    // New comparison (Ctrl+N)
+    {
+        let action = gio::SimpleAction::new("new-comparison", None);
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| {
+            build_new_comparison_tab(&nb, &st, &tabs);
+        });
+        win_actions.add_action(&action);
+    }
     add_tab_navigation_actions(&win_actions, &notebook);
     window.insert_action_group("win", Some(&win_actions));
     add_tab_navigation_keys(&window);
@@ -1627,9 +1655,7 @@ pub(super) fn build_dir_window(
         set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
-        // Note: dir.folder-copy-left/right/delete are NOT registered as app accels
-        // because they would fire even on file-diff tabs. Instead, a capture-phase
-        // key handler on dir_tab dispatches them (see below dir_tab setup).
+        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
     }
 
     window.connect_destroy(move |_| {

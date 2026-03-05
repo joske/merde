@@ -2730,20 +2730,6 @@ pub(super) fn collect_unsaved(files: Vec<(String, Button)>) -> Vec<(String, Butt
         .collect()
 }
 
-/// Shared close-request handler for windows with save buttons.
-pub(super) fn handle_close_request(
-    window: &ApplicationWindow,
-    files: Vec<(String, Button)>,
-) -> gtk4::glib::Propagation {
-    let unsaved = collect_unsaved(files);
-    if unsaved.is_empty() {
-        return gtk4::glib::Propagation::Proceed;
-    }
-    let w = window.clone();
-    confirm_unsaved_dialog(window, unsaved, move || w.close());
-    gtk4::glib::Propagation::Stop
-}
-
 /// Add tab navigation actions (prev-tab, next-tab, goto-tab) to a window action group.
 pub(super) fn add_tab_navigation_actions(
     win_actions: &gio::SimpleActionGroup,
@@ -2931,6 +2917,310 @@ pub(super) fn handle_notebook_close_request(
     let w = window.clone();
     confirm_unsaved_dialog(window, unsaved, move || w.close());
     gtk4::glib::Propagation::Stop
+}
+
+/// Create a large button with a title and subtitle, matching the welcome screen style.
+pub(super) fn make_welcome_button(title_text: &str, subtitle_text: &str) -> Button {
+    let bx = GtkBox::new(Orientation::Vertical, 2);
+    bx.set_margin_top(8);
+    bx.set_margin_bottom(8);
+    bx.set_margin_start(8);
+    bx.set_margin_end(8);
+    let t = Label::new(Some(title_text));
+    t.add_css_class("heading");
+    let s = Label::new(Some(subtitle_text));
+    s.add_css_class("dim-label");
+    bx.append(&t);
+    bx.append(&s);
+    let btn = Button::new();
+    btn.set_child(Some(&bx));
+    btn
+}
+
+/// Append a "New Comparison" tab to the given notebook with buttons to start
+/// file, directory, or 3-way merge comparisons.
+///
+/// "Compare Files" opens a file diff as a tab in the current notebook.
+/// "Compare Directories" and "3-way Merge" open new windows.
+pub(super) fn build_new_comparison_tab(
+    notebook: &Notebook,
+    settings: &Rc<RefCell<Settings>>,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+) {
+    let content = GtkBox::new(Orientation::Vertical, 16);
+    content.set_margin_top(32);
+    content.set_margin_bottom(32);
+    content.set_margin_start(48);
+    content.set_margin_end(48);
+    content.set_valign(gtk4::Align::Center);
+    content.set_vexpand(true);
+
+    let title = Label::new(Some("New Comparison"));
+    title.add_css_class("title-1");
+    content.append(&title);
+
+    let spacer = GtkBox::new(Orientation::Vertical, 0);
+    spacer.set_margin_top(8);
+    content.append(&spacer);
+
+    let files_btn = make_welcome_button("Compare Files", "Compare two files side-by-side");
+    content.append(&files_btn);
+    let dirs_btn = make_welcome_button("Compare Directories", "Compare directory trees");
+    content.append(&dirs_btn);
+    let merge_btn = make_welcome_button("3-way Merge", "Merge three files");
+    content.append(&merge_btn);
+
+    // Tab label with close button
+    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+    tab_label_box.append(&Label::new(Some("New Comparison")));
+    let close_btn = Button::from_icon_name("window-close-symbolic");
+    close_btn.add_css_class("flat");
+    close_btn.set_margin_start(4);
+    tab_label_box.append(&close_btn);
+
+    let page_num = notebook.append_page(&content, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+
+    // Close button on tab label
+    {
+        let nb = notebook.clone();
+        let w = content.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                nb.remove_page(Some(n));
+            }
+        });
+    }
+
+    // Compare Files handler — opens as a tab in the current notebook
+    {
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let w = content.clone();
+        let tabs = open_tabs.clone();
+        files_btn.connect_clicked(move |btn| {
+            let win = btn
+                .root()
+                .and_downcast::<ApplicationWindow>()
+                .expect("button must be in a window");
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select first file");
+            let st2 = st.clone();
+            let nb2 = nb.clone();
+            let w2 = w.clone();
+            let tabs2 = tabs.clone();
+            dialog.open(Some(&win), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select second file");
+                    let st3 = st2.clone();
+                    let nb3 = nb2.clone();
+                    let w3 = w2.clone();
+                    let tabs3 = tabs2.clone();
+                    let win2 = nb2.root().and_downcast::<ApplicationWindow>().unwrap();
+                    dialog2.open(Some(&win2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            open_file_diff_paths(&nb3, first_path, second_path, &tabs3, &st3);
+                            if let Some(n) = nb3.page_num(&w3) {
+                                nb3.remove_page(Some(n));
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // Compare Directories handler — opens as a tab in the current notebook
+    {
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let w = content.clone();
+        let tabs = open_tabs.clone();
+        dirs_btn.connect_clicked(move |btn| {
+            let win = btn
+                .root()
+                .and_downcast::<ApplicationWindow>()
+                .expect("button must be in a window");
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select first directory");
+            let st2 = st.clone();
+            let nb2 = nb.clone();
+            let w2 = w.clone();
+            let tabs2 = tabs.clone();
+            dialog.select_folder(Some(&win), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select second directory");
+                    let st3 = st2.clone();
+                    let nb3 = nb2.clone();
+                    let w3 = w2.clone();
+                    let tabs3 = tabs2.clone();
+                    let win2 = nb2.root().and_downcast::<ApplicationWindow>().unwrap();
+                    dialog2.select_folder(Some(&win2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            let (dir_widget, watcher_alive, left_view, dir_title) =
+                                build_dir_tab(first_path, second_path, st3, &nb3, &tabs3);
+
+                            // Tab label with close button
+                            let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+                            tab_label_box.append(&Label::new(Some(&dir_title)));
+                            let close_btn = Button::from_icon_name("window-close-symbolic");
+                            close_btn.set_has_frame(false);
+                            tab_label_box.append(&close_btn);
+
+                            let page_num = nb3.append_page(&dir_widget, Some(&tab_label_box));
+                            nb3.set_current_page(Some(page_num));
+                            left_view.grab_focus();
+
+                            {
+                                let nb4 = nb3.clone();
+                                let dw = dir_widget.clone();
+                                close_btn.connect_clicked(move |_| {
+                                    watcher_alive.set(false);
+                                    if let Some(n) = nb4.page_num(&dw) {
+                                        nb4.remove_page(Some(n));
+                                    }
+                                });
+                            }
+
+                            // Remove the New Comparison tab
+                            if let Some(n) = nb3.page_num(&w3) {
+                                nb3.remove_page(Some(n));
+                            }
+                        }
+                    });
+                }
+            });
+        });
+    }
+
+    // 3-way Merge handler — opens as a tab in the current notebook
+    {
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let w = content.clone();
+        merge_btn.connect_clicked(move |btn| {
+            let win = btn
+                .root()
+                .and_downcast::<ApplicationWindow>()
+                .expect("button must be in a window");
+            let dialog = gtk4::FileDialog::new();
+            dialog.set_title("Select left file");
+            let st2 = st.clone();
+            let nb2 = nb.clone();
+            let w2 = w.clone();
+            dialog.open(Some(&win), gio::Cancellable::NONE, move |result| {
+                if let Ok(first) = result
+                    && let Some(first_path) = first.path()
+                {
+                    let dialog2 = gtk4::FileDialog::new();
+                    dialog2.set_title("Select middle (base) file");
+                    let st3 = st2.clone();
+                    let nb3 = nb2.clone();
+                    let w3 = w2.clone();
+                    let win2 = nb2.root().and_downcast::<ApplicationWindow>().unwrap();
+                    dialog2.open(Some(&win2), gio::Cancellable::NONE, move |result2| {
+                        if let Ok(second) = result2
+                            && let Some(second_path) = second.path()
+                        {
+                            let dialog3 = gtk4::FileDialog::new();
+                            dialog3.set_title("Select right file");
+                            let st4 = st3.clone();
+                            let nb4 = nb3.clone();
+                            let w4 = w3.clone();
+                            let win3 = nb3.root().and_downcast::<ApplicationWindow>().unwrap();
+                            dialog3.open(Some(&win3), gio::Cancellable::NONE, move |result3| {
+                                if let Ok(third) = result3
+                                    && let Some(third_path) = third.path()
+                                {
+                                    let mv = build_merge_view(
+                                        &first_path,
+                                        &second_path,
+                                        &third_path,
+                                        &[],
+                                        &st4,
+                                    );
+                                    mv.widget
+                                        .insert_action_group("diff", Some(&mv.action_group));
+
+                                    // Build tab title
+                                    let ln = first_path.file_name().map_or_else(
+                                        || first_path.display().to_string(),
+                                        |n| n.to_string_lossy().into_owned(),
+                                    );
+                                    let mn = second_path.file_name().map_or_else(
+                                        || second_path.display().to_string(),
+                                        |n| n.to_string_lossy().into_owned(),
+                                    );
+                                    let rn = third_path.file_name().map_or_else(
+                                        || third_path.display().to_string(),
+                                        |n| n.to_string_lossy().into_owned(),
+                                    );
+                                    let merge_title = format!("{ln} — {mn} — {rn}");
+
+                                    // Tab label with close button
+                                    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+                                    tab_label_box.append(&Label::new(Some(&merge_title)));
+                                    let close_btn = Button::from_icon_name("window-close-symbolic");
+                                    close_btn.set_has_frame(false);
+                                    tab_label_box.append(&close_btn);
+
+                                    let page_num =
+                                        nb4.append_page(&mv.widget, Some(&tab_label_box));
+                                    nb4.set_current_page(Some(page_num));
+
+                                    {
+                                        let nb5 = nb4.clone();
+                                        let mw = mv.widget.clone();
+                                        let ms = mv.middle_save.clone();
+                                        let save_path = second_path.display().to_string();
+                                        close_btn.connect_clicked(move |_| {
+                                            // Check unsaved merge before closing
+                                            if ms.is_sensitive() {
+                                                if let Some(win) =
+                                                    nb5.root().and_downcast::<ApplicationWindow>()
+                                                {
+                                                    let nb6 = nb5.clone();
+                                                    let mw2 = mw.clone();
+                                                    confirm_unsaved_dialog(
+                                                        &win,
+                                                        vec![(save_path.clone(), ms.clone())],
+                                                        move || {
+                                                            if let Some(n) = nb6.page_num(&mw2) {
+                                                                nb6.remove_page(Some(n));
+                                                            }
+                                                        },
+                                                    );
+                                                }
+                                                return;
+                                            }
+                                            if let Some(n) = nb5.page_num(&mw) {
+                                                nb5.remove_page(Some(n));
+                                            }
+                                        });
+                                    }
+
+                                    // Remove the New Comparison tab
+                                    if let Some(n) = nb4.page_num(&w4) {
+                                        nb4.remove_page(Some(n));
+                                    }
+                                }
+                            });
+                        }
+                    });
+                }
+            });
+        });
+    }
 }
 
 #[cfg(test)]

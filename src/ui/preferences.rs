@@ -530,6 +530,7 @@ fn show_shortcuts_dialog(parent: &gtk4::Window) {
             (format!("{m}+Alt+PageUp"), "Previous tab"),
             (format!("{m}+Alt+PageDown"), "Next tab"),
             ("Alt+1-9".into(), "Switch to tab"),
+            (format!("{m}+N"), "New comparison"),
             (format!("{m}+,"), "Preferences"),
             (format!("{m}+W"), "Close tab"),
             (format!("{m}+Q"), "Quit"),

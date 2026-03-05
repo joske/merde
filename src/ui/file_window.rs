@@ -111,7 +111,7 @@ pub(super) fn build_file_window(
         });
     }
 
-    // Window title
+    // Window title / tab title
     let left_name = left_path.file_name().map_or_else(
         || left_path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -122,28 +122,58 @@ pub(super) fn build_file_window(
     );
     let title = format!("{left_name} — {right_name}");
 
+    // ── Notebook (tabs) ────────────────────────────────────────────
+    let notebook = Notebook::new();
+    notebook.set_scrollable(true);
+    notebook.append_page(&dv.widget, Some(&Label::new(Some(&title))));
+
+    // Track open file tabs
+    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+    {
+        let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        open_tabs.borrow_mut().push(FileTab {
+            id: tab_id,
+            rel_path: title.clone(),
+            widget: dv.widget.clone(),
+            left_path: Rc::new(RefCell::new(left_path.display().to_string())),
+            right_path: Rc::new(RefCell::new(right_path.display().to_string())),
+            left_buf: dv.left_buf.clone(),
+            right_buf: dv.right_buf.clone(),
+            left_save: dv.left_save.clone(),
+            right_save: dv.right_save.clone(),
+        });
+    }
+
     let window = ApplicationWindow::builder()
         .application(app)
-        .title(&title)
+        .title("Mergers")
         .default_width(900)
         .default_height(600)
-        .child(&dv.widget)
+        .child(&notebook)
         .build();
     window.insert_action_group("diff", Some(&dv.action_group));
 
     // Update window title when panes are swapped
     {
         let w = window.clone();
+        let nb = notebook.clone();
         let ln = left_name;
         let rn = right_name;
         let swapped = Rc::new(Cell::new(false));
         *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
             let s = !swapped.get();
             swapped.set(s);
-            if s {
-                w.set_title(Some(&format!("{rn} — {ln}")));
+            let new_title = if s {
+                format!("{rn} — {ln}")
             } else {
-                w.set_title(Some(&format!("{ln} — {rn}")));
+                format!("{ln} — {rn}")
+            };
+            w.set_title(Some(&new_title));
+            // Also update the tab label
+            if let Some(page) = nb.current_page()
+                && let Some(child) = nb.nth_page(Some(page))
+            {
+                nb.set_tab_label_text(&child, &new_title);
             }
         }));
     }
@@ -159,24 +189,38 @@ pub(super) fn build_file_window(
         });
         win_actions.add_action(&action);
     }
-    // Close-tab action (Ctrl+W) — close file window
+    // Close-tab action (Ctrl+W) — close current tab or window
     {
         let action = gio::SimpleAction::new("close-tab", None);
+        let nb = notebook.clone();
         let w = window.clone();
-        action.connect_activate(move |_, _| w.close());
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| match nb.current_page() {
+            None | Some(0) if nb.n_pages() <= 1 => w.close(),
+            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
+            None => w.close(),
+        });
         win_actions.add_action(&action);
     }
+    // New comparison (Ctrl+N)
+    {
+        let action = gio::SimpleAction::new("new-comparison", None);
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| {
+            build_new_comparison_tab(&nb, &st, &tabs);
+        });
+        win_actions.add_action(&action);
+    }
+    add_tab_navigation_actions(&win_actions, &notebook);
     window.insert_action_group("win", Some(&win_actions));
+    add_tab_navigation_keys(&window);
 
     // Unsaved-changes guard on window close button
     {
-        let ls = dv.left_save.clone();
-        let rs = dv.right_save.clone();
-        let lp = left_path.display().to_string();
-        let rp = right_path.display().to_string();
-        window.connect_close_request(move |w| {
-            handle_close_request(w, vec![(lp.clone(), ls.clone()), (rp.clone(), rs.clone())])
-        });
+        let tabs = open_tabs.clone();
+        window.connect_close_request(move |w| handle_notebook_close_request(w, &tabs));
     }
 
     // Bind keyboard accelerators
@@ -196,6 +240,7 @@ pub(super) fn build_file_window(
         set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
+        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
     }
 
     window.connect_destroy(move |_| {

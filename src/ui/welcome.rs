@@ -186,30 +186,26 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
         });
         win_actions.add_action(&action);
     }
+    // New comparison (Ctrl+N) — open another welcome window
+    {
+        let action = gio::SimpleAction::new("new-comparison", None);
+        let a = app.clone();
+        let st = settings.clone();
+        action.connect_activate(move |_, _| {
+            build_welcome_window(&a, st.clone());
+        });
+        win_actions.add_action(&action);
+    }
     window.insert_action_group("win", Some(&win_actions));
 
     if let Some(gtk_app) = window.application() {
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
+        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
     }
 
     window.set_child(Some(&content));
     window.present();
 }
 
-fn make_welcome_button(title_text: &str, subtitle_text: &str) -> Button {
-    let bx = GtkBox::new(Orientation::Vertical, 2);
-    bx.set_margin_top(8);
-    bx.set_margin_bottom(8);
-    bx.set_margin_start(8);
-    bx.set_margin_end(8);
-    let t = Label::new(Some(title_text));
-    t.add_css_class("heading");
-    let s = Label::new(Some(subtitle_text));
-    s.add_css_class("dim-label");
-    bx.append(&t);
-    bx.append(&s);
-    let btn = Button::new();
-    btn.set_child(Some(&bx));
-    btn
-}
+// make_welcome_button is now in common.rs

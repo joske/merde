@@ -1722,3 +1722,99 @@ pub(super) fn open_file_diff(
         });
     }
 }
+
+/// Open a file diff as a notebook tab, given two absolute paths.
+/// Used by the New Comparison tab when the user picks "Compare Files".
+pub(super) fn open_file_diff_paths(
+    notebook: &Notebook,
+    left_path: PathBuf,
+    right_path: PathBuf,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    let dv = build_diff_view(&left_path, &right_path, &[], settings);
+    dv.widget
+        .insert_action_group("diff", Some(&dv.action_group));
+
+    // Track tab
+    let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tab_left_path = Rc::new(RefCell::new(left_path.display().to_string()));
+    let tab_right_path = Rc::new(RefCell::new(right_path.display().to_string()));
+
+    let left_name = left_path.file_name().map_or_else(
+        || left_path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let right_name = right_path.file_name().map_or_else(
+        || right_path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let tab_title = format!("{left_name} — {right_name}");
+
+    open_tabs.borrow_mut().push(FileTab {
+        id: tab_id,
+        rel_path: tab_title.clone(),
+        widget: dv.widget.clone(),
+        left_path: tab_left_path.clone(),
+        right_path: tab_right_path.clone(),
+        left_buf: dv.left_buf,
+        right_buf: dv.right_buf,
+        left_save: dv.left_save,
+        right_save: dv.right_save,
+    });
+
+    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+    let label = Label::new(Some(&tab_title));
+    let close_btn = Button::from_icon_name("window-close-symbolic");
+    close_btn.set_has_frame(false);
+    tab_label_box.append(&label);
+    tab_label_box.append(&close_btn);
+
+    // Update tab label when panes are swapped
+    {
+        let lbl = label.clone();
+        let ln = left_name;
+        let rn = right_name;
+        let swapped = Rc::new(Cell::new(false));
+        let tlp = tab_left_path;
+        let trp = tab_right_path;
+        *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
+            let s = !swapped.get();
+            swapped.set(s);
+            if s {
+                lbl.set_text(&format!("{rn} — {ln}"));
+            } else {
+                lbl.set_text(&format!("{ln} — {rn}"));
+            }
+            std::mem::swap(&mut *tlp.borrow_mut(), &mut *trp.borrow_mut());
+        }));
+    }
+
+    let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+
+    // Focus the left text view
+    let ltv = dv.left_text_view.clone();
+    gtk4::glib::idle_add_local_once(move || {
+        ltv.grab_focus();
+    });
+
+    {
+        let nb = notebook.clone();
+        let w = dv.widget.clone();
+        let tabs = open_tabs.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                let win = nb
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+                if let Some(win) = win {
+                    close_notebook_tab(&win, &nb, &tabs, n);
+                } else {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                }
+            }
+        });
+    }
+}
