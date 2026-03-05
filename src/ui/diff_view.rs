@@ -1379,6 +1379,151 @@ pub(super) fn build_diff_view(
         action_group.add_action(&action);
     }
 
+    // Ctrl+R / F5: refresh — re-read both files from disk
+    {
+        let action = gio::SimpleAction::new("refresh", None);
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        action.connect_activate(move |_, _| {
+            let do_reload = {
+                let lsp = lsp.clone();
+                let rsp = rsp.clone();
+                let lb = lb.clone();
+                let rb = rb.clone();
+                let ls = ls.clone();
+                let rs = rs.clone();
+                move || {
+                    if let Some(lc) = read_file_for_reload(&lsp.borrow()) {
+                        lb.set_text(&lc);
+                        ls.set_sensitive(false);
+                    }
+                    if let Some(rc) = read_file_for_reload(&rsp.borrow()) {
+                        rb.set_text(&rc);
+                        rs.set_sensitive(false);
+                    }
+                }
+            };
+            if ls.is_sensitive() || rs.is_sensitive() {
+                if let Some(win) = ls
+                    .root()
+                    .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                {
+                    let reload = do_reload;
+                    show_confirm_dialog(
+                        &win,
+                        "Discard Changes?",
+                        "Unsaved changes will be lost. Reload from disk?",
+                        "Reload",
+                        reload,
+                    );
+                }
+            } else {
+                do_reload();
+            }
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+O: open focused file externally
+    {
+        let action = gio::SimpleAction::new("open-externally", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            let path = if active == ltv {
+                lsp.borrow().clone()
+            } else {
+                rsp.borrow().clone()
+            };
+            open_externally(&path);
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+S: save as — save focused pane to a new path
+    {
+        let action = gio::SimpleAction::new("save-as", None);
+        let av = active_view.clone();
+        let ltv = left_pane.text_view.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        let ll = left_pane.path_label.clone();
+        let rl = right_pane.path_label.clone();
+        action.connect_activate(move |_, _| {
+            let active = av.borrow().clone();
+            let (buf, sp, btn, lbl) = if active == ltv {
+                (lb.clone(), lsp.clone(), ls.clone(), ll.clone())
+            } else {
+                (rb.clone(), rsp.clone(), rs.clone(), rl.clone())
+            };
+            let dialog = gtk4::FileDialog::builder().title("Save As").build();
+            let win = btn
+                .root()
+                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+                    match fs::write(&path, text.as_str()) {
+                        Ok(()) => {
+                            mark_saving(&path);
+                            btn.set_sensitive(false);
+                            (*sp.borrow_mut()).clone_from(&path);
+                            lbl.set_text(&shortened_path(&path));
+                            lbl.set_tooltip_text(Some(&path.display().to_string()));
+                        }
+                        Err(e) => {
+                            if let Some(win) = btn
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                            {
+                                show_error_dialog(
+                                    &win,
+                                    &format!("Failed to save {}: {e}", path.display()),
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        });
+        action_group.add_action(&action);
+    }
+
+    // Ctrl+Shift+L: save all dirty panes
+    {
+        let action = gio::SimpleAction::new("save-all", None);
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        let lsp = left_pane.save_path.clone();
+        let rsp = right_pane.save_path.clone();
+        let ls = left_pane.save_btn.clone();
+        let rs = right_pane.save_btn.clone();
+        action.connect_activate(move |_, _| {
+            if ls.is_sensitive() {
+                let text = lb.text(&lb.start_iter(), &lb.end_iter(), false);
+                save_file(&lsp.borrow(), text.as_str(), &ls);
+            }
+            if rs.is_sensitive() {
+                let text = rb.text(&rb.start_iter(), &rb.end_iter(), false);
+                save_file(&rsp.borrow(), text.as_str(), &rs);
+            }
+        });
+        action_group.add_action(&action);
+    }
+
     // Intercept Alt+Up/Down/Left/Right in the capture phase so sourceview5
     // doesn't consume them for its move-lines action.
     for tv in [&left_pane.text_view, &right_pane.text_view] {
@@ -1405,12 +1550,22 @@ pub(super) fn build_diff_view(
                     _ => None,
                 }
             } else if has_primary_modifier(mods) {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
-                    && (key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P)
-                {
-                    Some("export-patch")
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    if key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P {
+                        Some("export-patch")
+                    } else if key == gtk4::gdk::Key::o || key == gtk4::gdk::Key::O {
+                        Some("open-externally")
+                    } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
+                        Some("save-as")
+                    } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
+                        Some("save-all")
+                    } else {
+                        None
+                    }
                 } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
                     Some("save")
+                } else if key == gtk4::gdk::Key::r || key == gtk4::gdk::Key::R {
+                    Some("refresh")
                 } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
                     Some("prev-chunk")
                 } else if key == gtk4::gdk::Key::d || key == gtk4::gdk::Key::D {
@@ -1430,6 +1585,8 @@ pub(super) fn build_diff_view(
                 } else {
                     Some("find-next")
                 }
+            } else if key == gtk4::gdk::Key::F5 {
+                Some("refresh")
             } else {
                 None
             };

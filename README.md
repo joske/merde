@@ -22,6 +22,10 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 - **Synchronized scrolling** — chunk-aware vertical sync keeps corresponding lines aligned
 - **Chunk map** — visual overview strips alongside each pane with viewport indicator
 - **Patch export** (unified diff format)
+- **Refresh** (Ctrl+R / F5) — reload files from disk with unsaved-changes confirmation
+- **Open externally** (Ctrl+Shift+O) — open focused file in system default app
+- **Save As** (Ctrl+Shift+S) — save focused pane to a new path
+- **Save All** (Ctrl+Shift+L) — save all dirty panes at once
 - **Swap panes**
 - **Custom pane labels** via `-L` flag
 - **Directory copy/delete** operations

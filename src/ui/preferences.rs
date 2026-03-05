@@ -503,6 +503,8 @@ fn show_shortcuts_dialog(parent: &gtk4::Window) {
             (format!("{m}+Z"), "Undo"),
             (format!("{m}+Shift+Z"), "Redo"),
             (format!("{m}+S"), "Save"),
+            (format!("{m}+Shift+S"), "Save As"),
+            (format!("{m}+Shift+L"), "Save All"),
             ("Alt+Left".into(), "Copy left"),
             ("Alt+Right".into(), "Copy right"),
         ],
@@ -522,6 +524,8 @@ fn show_shortcuts_dialog(parent: &gtk4::Window) {
         &content,
         "Other",
         &[
+            (format!("{m}+R / F5"), "Refresh"),
+            (format!("{m}+Shift+O"), "Open externally"),
             (format!("{m}+Shift+P"), "Export patch"),
             (format!("{m}+,"), "Preferences"),
             (format!("{m}+W"), "Close tab"),

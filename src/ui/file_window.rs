@@ -190,6 +190,10 @@ pub(super) fn build_file_window(
         set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);
         set_platform_accels(&gtk_app, "diff.export-patch", &["<Ctrl><Shift>p"]);
         set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
+        set_platform_accels(&gtk_app, "diff.refresh", &["<Ctrl>r"]);
+        set_platform_accels(&gtk_app, "diff.open-externally", &["<Ctrl><Shift>o"]);
+        set_platform_accels(&gtk_app, "diff.save-as", &["<Ctrl><Shift>s"]);
+        set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
     }

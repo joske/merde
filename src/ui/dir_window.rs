@@ -1168,6 +1168,105 @@ pub(super) fn build_dir_window(
         dir_action_group.add_action(&action);
     }
 
+    // Open externally: open selected file/dir in system default app
+    {
+        let action = gio::SimpleAction::new("folder-open-externally", None);
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        let fl = focused_left.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(raw) = get_row() {
+                let info = DirRowInfo::decode(&raw);
+                let lp = Path::new(ld.borrow().as_str()).join(&info.rel_path);
+                let rp = Path::new(rd.borrow().as_str()).join(&info.rel_path);
+                let path = match info.status {
+                    FileStatus::LeftOnly => lp,
+                    FileStatus::RightOnly => rp,
+                    FileStatus::Different | FileStatus::Same => {
+                        if fl.get() {
+                            lp
+                        } else {
+                            rp
+                        }
+                    }
+                };
+                let abs = path.canonicalize().unwrap_or(path);
+                open_externally(&abs);
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
+    // Collapse all: collapse every expanded row in the tree
+    {
+        let action = gio::SimpleAction::new("folder-collapse-all", None);
+        let tm = tree_model.clone();
+        action.connect_activate(move |_, _| {
+            for i in 0..tm.n_items() {
+                if let Some(item) = tm.item(i)
+                    && let Ok(row) = item.downcast::<TreeListRow>()
+                    && row.is_expanded()
+                {
+                    row.set_expanded(false);
+                }
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
+    // Expand all: expand every directory row in the tree
+    {
+        let action = gio::SimpleAction::new("folder-expand-all", None);
+        let tm = tree_model.clone();
+        action.connect_activate(move |_, _| {
+            // Expand iteratively since expanding a row may add new children
+            let mut i = 0;
+            while i < tm.n_items() {
+                if let Some(item) = tm.item(i)
+                    && let Ok(row) = item.downcast::<TreeListRow>()
+                    && row.is_expandable()
+                    && !row.is_expanded()
+                {
+                    row.set_expanded(true);
+                }
+                i += 1;
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
+    // Copy file path: copy the selected file's absolute path to clipboard
+    {
+        let action = gio::SimpleAction::new("folder-copy-path", None);
+        let get_row = get_selected_row.clone();
+        let ld = left_dir.clone();
+        let rd = right_dir.clone();
+        let fl = focused_left.clone();
+        let lv = left_view.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(raw) = get_row() {
+                let info = DirRowInfo::decode(&raw);
+                let lp = Path::new(ld.borrow().as_str()).join(&info.rel_path);
+                let rp = Path::new(rd.borrow().as_str()).join(&info.rel_path);
+                let path = match info.status {
+                    FileStatus::LeftOnly => lp,
+                    FileStatus::RightOnly => rp,
+                    FileStatus::Different | FileStatus::Same => {
+                        if fl.get() {
+                            lp
+                        } else {
+                            rp
+                        }
+                    }
+                };
+                let abs = path.canonicalize().unwrap_or(path);
+                lv.clipboard().set_text(&abs.display().to_string());
+            }
+        });
+        dir_action_group.add_action(&action);
+    }
+
     // ── Dir tab: toolbar + paned ──────────────────────────────────
     let dir_tab = GtkBox::new(Orientation::Vertical, 0);
     dir_tab.append(&dir_toolbar);
@@ -1240,10 +1339,20 @@ pub(super) fn build_dir_window(
     // ── Dir context menu ────────────────────────────────────────────
     {
         let dir_menu = gio::Menu::new();
-        dir_menu.append(Some("Open Diff"), Some("dir.folder-open-diff"));
-        dir_menu.append(Some("Copy to Left"), Some("dir.folder-copy-left"));
-        dir_menu.append(Some("Copy to Right"), Some("dir.folder-copy-right"));
-        dir_menu.append(Some("Delete"), Some("dir.folder-delete"));
+        let actions_section = gio::Menu::new();
+        actions_section.append(Some("Open Diff"), Some("dir.folder-open-diff"));
+        actions_section.append(Some("Copy to Left"), Some("dir.folder-copy-left"));
+        actions_section.append(Some("Copy to Right"), Some("dir.folder-copy-right"));
+        actions_section.append(Some("Delete"), Some("dir.folder-delete"));
+        dir_menu.append_section(None, &actions_section);
+        let tree_section = gio::Menu::new();
+        tree_section.append(Some("Collapse All"), Some("dir.folder-collapse-all"));
+        tree_section.append(Some("Expand All"), Some("dir.folder-expand-all"));
+        dir_menu.append_section(None, &tree_section);
+        let util_section = gio::Menu::new();
+        util_section.append(Some("Open Externally"), Some("dir.folder-open-externally"));
+        util_section.append(Some("Copy File Path"), Some("dir.folder-copy-path"));
+        dir_menu.append_section(None, &util_section);
 
         let dir_popover_l = PopoverMenu::from_model(Some(&dir_menu));
         dir_popover_l.set_parent(&left_view);

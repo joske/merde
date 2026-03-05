@@ -200,6 +200,25 @@ pub(super) fn save_file(path: &Path, content: &str, save_btn: &Button) {
     }
 }
 
+/// Open a file with the system's default application.
+pub(super) fn open_externally(path: &Path) {
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        #[cfg(target_os = "macos")]
+        let result = std::process::Command::new("open").arg(&path).status();
+        #[cfg(target_os = "windows")]
+        let result = std::process::Command::new("cmd")
+            .args(["/C", "start", ""])
+            .arg(&path)
+            .status();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let result = std::process::Command::new("xdg-open").arg(&path).status();
+        if let Err(e) = result {
+            eprintln!("Failed to open {}: {e}", path.display());
+        }
+    });
+}
+
 /// Show a modal error dialog with a single OK button.
 pub(super) fn show_error_dialog(parent: &ApplicationWindow, message: &str) {
     let dialog = gtk4::Window::builder()

@@ -668,6 +668,10 @@ pub(super) fn build_vcs_window(
 
     if let Some(gtk_app) = window.application() {
         set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
+        set_platform_accels(&gtk_app, "diff.refresh", &["<Ctrl>r"]);
+        set_platform_accels(&gtk_app, "diff.open-externally", &["<Ctrl><Shift>o"]);
+        set_platform_accels(&gtk_app, "diff.save-as", &["<Ctrl><Shift>s"]);
+        set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
         set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
         set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
     }
