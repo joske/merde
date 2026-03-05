@@ -42,6 +42,10 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
     let merge_btn = make_welcome_button("3-way Merge", "Merge three files");
     content.append(&merge_btn);
 
+    // Blank Comparison button
+    let blank_btn = make_welcome_button("Blank Comparison", "Start with empty files");
+    content.append(&blank_btn);
+
     // Compare Files handler
     {
         let app2 = app.clone();
@@ -156,6 +160,23 @@ pub(super) fn build_welcome_window(app: &Application, settings: Rc<RefCell<Setti
                     });
                 }
             });
+        });
+    }
+
+    // Blank Comparison handler
+    {
+        let app2 = app.clone();
+        let w = window.clone();
+        let st = settings.clone();
+        blank_btn.connect_clicked(move |_| {
+            build_file_window(
+                &app2,
+                PathBuf::new(),
+                PathBuf::new(),
+                &["Untitled".to_string(), "Untitled".to_string()],
+                &st,
+            );
+            w.close();
         });
     }
 

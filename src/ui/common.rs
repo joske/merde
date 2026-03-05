@@ -157,6 +157,11 @@ pub(super) fn reload_file_tab(tab: &FileTab) -> bool {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
+/// Returns `true` when `path` is the empty sentinel used for blank comparisons.
+pub(super) fn is_blank_path(p: &Path) -> bool {
+    p.as_os_str().is_empty()
+}
+
 /// Read a file as text, returning content and whether it was binary.
 /// Binary files return an empty string and `true`.
 /// Only reads the file once.
@@ -1596,9 +1601,23 @@ pub(super) fn make_diff_pane(
     let save_btn = Button::from_icon_name("document-save-symbolic");
     save_btn.set_tooltip_text(Some("Save"));
     save_btn.set_sensitive(false);
-    let display_name = label_override.map_or_else(|| shortened_path(file_path), String::from);
+    let display_name = label_override.map_or_else(
+        || {
+            if is_blank_path(file_path) {
+                "Untitled".to_string()
+            } else {
+                shortened_path(file_path)
+            }
+        },
+        String::from,
+    );
     let path_label = Label::new(Some(&display_name));
-    path_label.set_tooltip_text(Some(&file_path.display().to_string()));
+    let tooltip = if is_blank_path(file_path) {
+        "Untitled".to_string()
+    } else {
+        file_path.display().to_string()
+    };
+    path_label.set_tooltip_text(Some(&tooltip));
     path_label.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     path_label.set_hexpand(true);
     path_label.set_halign(gtk4::Align::Center);
@@ -1617,9 +1636,48 @@ pub(super) fn make_diff_pane(
     let save_path = Rc::new(RefCell::new(file_path.to_path_buf()));
     let save_path_clone = save_path.clone();
     let save_btn_ref = save_btn.clone();
+    let path_label_clone = path_label.clone();
     save_btn.connect_clicked(move |_| {
-        let text = buf_clone.text(&buf_clone.start_iter(), &buf_clone.end_iter(), false);
-        save_file(&save_path_clone.borrow(), text.as_str(), &save_btn_ref);
+        if is_blank_path(&save_path_clone.borrow()) {
+            let dialog = gtk4::FileDialog::builder().title("Save As").build();
+            let win = save_btn_ref
+                .root()
+                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+            let buf = buf_clone.clone();
+            let sp = save_path_clone.clone();
+            let btn = save_btn_ref.clone();
+            let lbl = path_label_clone.clone();
+            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result
+                    && let Some(path) = file.path()
+                {
+                    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+                    match fs::write(&path, text.as_str()) {
+                        Ok(()) => {
+                            mark_saving(&path);
+                            btn.set_sensitive(false);
+                            (*sp.borrow_mut()).clone_from(&path);
+                            lbl.set_text(&shortened_path(&path));
+                            lbl.set_tooltip_text(Some(&path.display().to_string()));
+                        }
+                        Err(e) => {
+                            if let Some(win) = btn
+                                .root()
+                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                            {
+                                show_error_dialog(
+                                    &win,
+                                    &format!("Failed to save {}: {e}", path.display()),
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+        } else {
+            let text = buf_clone.text(&buf_clone.start_iter(), &buf_clone.end_iter(), false);
+            save_file(&save_path_clone.borrow(), text.as_str(), &save_btn_ref);
+        }
     });
 
     let filler_overlay = DrawingArea::new();
@@ -2603,6 +2661,50 @@ pub(super) fn setup_scroll_sync(
 /// `unsaved` lists (`display_path`, `save_button`) for each file with unsaved
 /// changes.  The user can check / uncheck individual files.
 ///
+/// Process unsaved saves one at a time. Synchronous saves (non-blank paths) are
+/// handled immediately. Async saves (blank paths via Save As dialog) pause the
+/// chain until the save button becomes insensitive, then continue with the rest.
+fn process_unsaved_saves(
+    checks: &Rc<Vec<(gtk4::CheckButton, Button)>>,
+    dialog: &gtk4::Window,
+    on_close: &Rc<dyn Fn()>,
+) {
+    for (check, btn) in checks.iter() {
+        if check.is_active() && btn.is_sensitive() {
+            btn.emit_clicked();
+            if btn.is_sensitive() {
+                // Save was async (Save As dialog opened). Wait for completion,
+                // then resume processing the remaining saves.
+                let checks = checks.clone();
+                let dialog = dialog.clone();
+                let on_close = on_close.clone();
+                let handler_id: Rc<RefCell<Option<gtk4::glib::SignalHandlerId>>> =
+                    Rc::new(RefCell::new(None));
+                let handler_id2 = handler_id.clone();
+                *handler_id.borrow_mut() =
+                    Some(btn.connect_notify_local(Some("sensitive"), move |btn, _| {
+                        if !btn.is_sensitive() {
+                            if let Some(id) = handler_id2.borrow_mut().take() {
+                                btn.disconnect(id);
+                            }
+                            process_unsaved_saves(&checks, &dialog, &on_close);
+                        }
+                    }));
+                return;
+            }
+            // Sync save succeeded (button now insensitive), continue to next
+        }
+    }
+    // All checked saves completed — close dialog.
+    let any_failed = checks
+        .iter()
+        .any(|(check, btn)| check.is_active() && btn.is_sensitive());
+    if !any_failed {
+        dialog.close();
+        on_close();
+    }
+}
+
 /// * **Save** — clicks the save button for every checked file, then calls
 ///   `on_close`.
 /// * **Close without Saving** — marks every save button insensitive (so the
@@ -2682,25 +2784,14 @@ pub(super) fn confirm_unsaved_dialog(
         cancel_btn.connect_clicked(move |_| d.close());
     }
     // Save checked files, then close (unless a save failed).
+    // Saves are processed one at a time: if a save is async (Save As for blank
+    // panes), we wait for it to complete before processing the next.
     {
         let d = dialog.clone();
         let checks = checks.clone();
         let on_close = on_close.clone();
         save_btn.connect_clicked(move |_| {
-            for (check, btn) in checks.iter() {
-                if check.is_active() && btn.is_sensitive() {
-                    btn.emit_clicked();
-                }
-            }
-            // If any save button is still sensitive, a save failed — don't close.
-            let any_failed = checks
-                .iter()
-                .any(|(check, btn)| check.is_active() && btn.is_sensitive());
-            if any_failed {
-                return;
-            }
-            d.close();
-            on_close();
+            process_unsaved_saves(&checks, &d, &on_close);
         });
     }
     // Close without saving — mark all insensitive so the subsequent
@@ -2870,6 +2961,16 @@ pub(super) fn close_notebook_tab(
         notebook.remove_page(Some(page));
         return;
     };
+    let lp = if lp.is_empty() {
+        "Untitled".to_string()
+    } else {
+        lp
+    };
+    let rp = if rp.is_empty() {
+        "Untitled".to_string()
+    } else {
+        rp
+    };
     let unsaved = collect_unsaved(vec![(lp, ls), (rp, rs)]);
     if unsaved.is_empty() {
         notebook.remove_page(Some(page));
@@ -2903,10 +3004,22 @@ pub(super) fn handle_notebook_close_request(
         .flat_map(|t| {
             let mut v = Vec::new();
             if t.left_save.is_sensitive() {
-                v.push((t.left_path.borrow().clone(), t.left_save.clone()));
+                let path = t.left_path.borrow().clone();
+                let label = if path.is_empty() {
+                    "Untitled".to_string()
+                } else {
+                    path
+                };
+                v.push((label, t.left_save.clone()));
             }
             if t.right_save.is_sensitive() {
-                v.push((t.right_path.borrow().clone(), t.right_save.clone()));
+                let path = t.right_path.borrow().clone();
+                let label = if path.is_empty() {
+                    "Untitled".to_string()
+                } else {
+                    path
+                };
+                v.push((label, t.right_save.clone()));
             }
             v
         })
@@ -2969,6 +3082,8 @@ pub(super) fn build_new_comparison_tab(
     content.append(&dirs_btn);
     let merge_btn = make_welcome_button("3-way Merge", "Merge three files");
     content.append(&merge_btn);
+    let blank_btn = make_welcome_button("Blank Comparison", "Start with empty files");
+    content.append(&blank_btn);
 
     // Tab label with close button
     let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
@@ -3219,6 +3334,20 @@ pub(super) fn build_new_comparison_tab(
                     });
                 }
             });
+        });
+    }
+
+    // Blank Comparison handler — opens an empty diff tab
+    {
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let w = content.clone();
+        let tabs = open_tabs.clone();
+        blank_btn.connect_clicked(move |_| {
+            open_blank_diff(&nb, &tabs, &st);
+            if let Some(n) = nb.page_num(&w) {
+                nb.remove_page(Some(n));
+            }
         });
     }
 }

@@ -112,14 +112,22 @@ pub(super) fn build_file_window(
     }
 
     // Window title / tab title
-    let left_name = left_path.file_name().map_or_else(
-        || left_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let right_name = right_path.file_name().map_or_else(
-        || right_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
+    let left_name = if is_blank_path(&left_path) {
+        "Untitled".to_string()
+    } else {
+        left_path.file_name().map_or_else(
+            || left_path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    };
+    let right_name = if is_blank_path(&right_path) {
+        "Untitled".to_string()
+    } else {
+        right_path.file_name().map_or_else(
+            || right_path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    };
     let title = format!("{left_name} — {right_name}");
 
     // ── Notebook (tabs) ────────────────────────────────────────────

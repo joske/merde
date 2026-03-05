@@ -26,6 +26,7 @@ A visual diff and merge tool written in Rust with GTK4, inspired by [Meld](https
 - **Open externally** (Ctrl+Shift+O) — open focused file in system default app
 - **Save As** (Ctrl+Shift+S) — save focused pane to a new path
 - **Save All** (Ctrl+Shift+L) — save all dirty panes at once
+- **Blank Comparison** — start with empty panes for quick scratch diffs
 - **New Comparison** (Ctrl+N) — open a new comparison tab from any window
 - **Tab navigation** — Ctrl+Alt+PageUp/Down and Alt+1-9 to switch tabs
 - **Swap panes**
