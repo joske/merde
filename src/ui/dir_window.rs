@@ -1603,7 +1603,9 @@ pub(super) fn build_dir_window(
         });
         win_actions.add_action(&action);
     }
+    add_tab_navigation_actions(&win_actions, &notebook);
     window.insert_action_group("win", Some(&win_actions));
+    add_tab_navigation_keys(&window);
 
     // Unsaved-changes guard on window close button
     {

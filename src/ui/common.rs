@@ -2744,6 +2744,122 @@ pub(super) fn handle_close_request(
     gtk4::glib::Propagation::Stop
 }
 
+/// Add tab navigation actions (prev-tab, next-tab, goto-tab) to a window action group.
+pub(super) fn add_tab_navigation_actions(
+    win_actions: &gio::SimpleActionGroup,
+    notebook: &Notebook,
+) {
+    // Previous tab (Ctrl+Alt+PageUp)
+    {
+        let action = gio::SimpleAction::new("prev-tab", None);
+        let nb = notebook.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(cur) = nb.current_page()
+                && cur > 0
+            {
+                nb.set_current_page(Some(cur - 1));
+            }
+        });
+        win_actions.add_action(&action);
+    }
+    // Next tab (Ctrl+Alt+PageDown)
+    {
+        let action = gio::SimpleAction::new("next-tab", None);
+        let nb = notebook.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(cur) = nb.current_page() {
+                let last = nb.n_pages().saturating_sub(1);
+                if cur < last {
+                    nb.set_current_page(Some(cur + 1));
+                }
+            }
+        });
+        win_actions.add_action(&action);
+    }
+    // Go to tab N (Alt+1-9): expects variant "u" with 0-based index
+    {
+        let action = gio::SimpleAction::new("goto-tab", Some(gtk4::glib::VariantTy::UINT32));
+        let nb = notebook.clone();
+        action.connect_activate(move |_, param| {
+            if let Some(p) = param {
+                let idx = p.get::<u32>().unwrap_or(0);
+                if idx < nb.n_pages() {
+                    nb.set_current_page(Some(idx));
+                }
+            }
+        });
+        win_actions.add_action(&action);
+    }
+}
+
+/// Map a hardware keycode to a digit (0-8) for Alt+1-9 tab switching.
+/// On macOS the keyval is translated by the input method (Alt+1 → ¡) so we
+/// must match on the physical keycode instead.
+fn keycode_to_tab_index(keycode: u32) -> Option<u32> {
+    #[cfg(target_os = "macos")]
+    {
+        // macOS virtual keycodes for the number row
+        match keycode {
+            18 => Some(0), // 1
+            19 => Some(1), // 2
+            20 => Some(2), // 3
+            21 => Some(3), // 4
+            23 => Some(4), // 5
+            22 => Some(5), // 6
+            26 => Some(6), // 7
+            28 => Some(7), // 8
+            25 => Some(8), // 9
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // X11/Wayland keycodes: 10 = 1, 11 = 2, ..., 18 = 9
+        if (10..=18).contains(&keycode) {
+            Some(keycode - 10)
+        } else {
+            None
+        }
+    }
+}
+
+/// Install a capture-phase key handler for tab navigation shortcuts.
+/// Handles Ctrl+Alt+PageUp/Down and Alt+1-9.
+pub(super) fn add_tab_navigation_keys(widget: &impl IsA<gtk4::Widget>) {
+    let key_ctl = EventControllerKey::new();
+    key_ctl.set_propagation_phase(gtk4::PropagationPhase::Capture);
+    key_ctl.connect_key_pressed(move |ctl, key, keycode, mods| {
+        // Ctrl+Alt+PageUp/Down — prev/next tab
+        if has_primary_modifier(mods) && mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
+            let action_name = match key {
+                k if k == gtk4::gdk::Key::Page_Up => Some("prev-tab"),
+                k if k == gtk4::gdk::Key::Page_Down => Some("next-tab"),
+                _ => None,
+            };
+            if let Some(name) = action_name {
+                if let Some(w) = ctl.widget() {
+                    w.activate_action(&format!("win.{name}"), None).ok();
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+        }
+        // Alt+1-9 — go to tab by number (use hardware keycode because
+        // macOS translates Alt+digit to special characters)
+        if mods.contains(gtk4::gdk::ModifierType::ALT_MASK)
+            && !has_primary_modifier(mods)
+            && let Some(idx) = keycode_to_tab_index(keycode)
+        {
+            if let Some(w) = ctl.widget() {
+                w.activate_action("win.goto-tab", Some(&idx.to_variant()))
+                    .ok();
+            }
+            return gtk4::glib::Propagation::Stop;
+        }
+        gtk4::glib::Propagation::Proceed
+    });
+    widget.add_controller(key_ctl);
+}
+
 /// Close a notebook file tab, prompting to save if needed.
 pub(super) fn close_notebook_tab(
     window: &ApplicationWindow,
