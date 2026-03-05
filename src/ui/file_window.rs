@@ -161,9 +161,8 @@ pub(super) fn build_file_window(
         .build();
     window.insert_action_group("diff", Some(&dv.action_group));
 
-    // Update window title when panes are swapped
+    // Update tab label when panes are swapped
     {
-        let w = window.clone();
         let nb = notebook.clone();
         let ln = left_name;
         let rn = right_name;
@@ -176,8 +175,6 @@ pub(super) fn build_file_window(
             } else {
                 format!("{ln} — {rn}")
             };
-            w.set_title(Some(&new_title));
-            // Also update the tab label
             if let Some(page) = nb.current_page()
                 && let Some(child) = nb.nth_page(Some(page))
             {

@@ -224,8 +224,18 @@ pub(super) fn open_externally(path: &Path) {
             .status();
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
         let result = std::process::Command::new("xdg-open").arg(&path).status();
-        if let Err(e) = result {
-            eprintln!("Failed to open {}: {e}", path.display());
+        match result {
+            Ok(status) if !status.success() => {
+                eprintln!(
+                    "Failed to open {}: external opener exited with status {:?}",
+                    path.display(),
+                    status.code()
+                );
+            }
+            Err(e) => {
+                eprintln!("Failed to open {}: {e}", path.display());
+            }
+            _ => {}
         }
     });
 }
@@ -3208,11 +3218,22 @@ pub(super) fn build_new_comparison_tab(
                             nb3.set_current_page(Some(page_num));
                             left_view.grab_focus();
 
+                            // Stop watcher when tab is removed by any means
+                            // (close button, Ctrl+W, window close)
+                            {
+                                let dw2 = dir_widget.clone();
+                                let wa = watcher_alive.clone();
+                                nb3.connect_page_removed(move |_, child, _| {
+                                    if *child == dw2 {
+                                        wa.set(false);
+                                    }
+                                });
+                            }
+
                             {
                                 let nb4 = nb3.clone();
                                 let dw = dir_widget.clone();
                                 close_btn.connect_clicked(move |_| {
-                                    watcher_alive.set(false);
                                     if let Some(n) = nb4.page_num(&dw) {
                                         nb4.remove_page(Some(n));
                                     }
