@@ -656,7 +656,7 @@ pub fn build_new_comparison_tab(
                                         let nb5 = nb4.clone();
                                         let mw = mv.widget.clone();
                                         let ms = mv.middle_save.clone();
-                                        let save_path = second_path.display().to_string();
+                                        let mtp = mv.middle_tab_path.clone();
                                         let tabs5 = tabs4.clone();
                                         close_btn.connect_clicked(move |_| {
                                             // Check unsaved merge before closing
@@ -667,9 +667,10 @@ pub fn build_new_comparison_tab(
                                                     let nb6 = nb5.clone();
                                                     let mw2 = mw.clone();
                                                     let tabs6 = tabs5.clone();
+                                                    let label = mtp.borrow().clone();
                                                     confirm_unsaved_dialog(
                                                         &win,
-                                                        vec![(save_path.clone(), ms.clone())],
+                                                        vec![(label, ms.clone())],
                                                         move || {
                                                             if let Some(n) = nb6.page_num(&mw2) {
                                                                 nb6.remove_page(Some(n));
