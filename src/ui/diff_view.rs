@@ -465,6 +465,8 @@ pub(super) fn build_diff_view(
         let rl = right_pane.path_label.clone();
         let lsp = left_pane.save_path.clone();
         let rsp = right_pane.save_path.clone();
+        let ltp = left_pane.tab_path.clone();
+        let rtp = right_pane.tab_path.clone();
         let ls = left_pane.save_btn.clone();
         let rs = right_pane.save_btn.clone();
         let cb = swap_callback.clone();
@@ -488,6 +490,7 @@ pub(super) fn build_diff_view(
             ll.set_tooltip_text(rl_tip.as_deref());
             rl.set_tooltip_text(ll_tip.as_deref());
             std::mem::swap(&mut *lsp.borrow_mut(), &mut *rsp.borrow_mut());
+            std::mem::swap(&mut *ltp.borrow_mut(), &mut *rtp.borrow_mut());
             if let Some(f) = cb.borrow().as_ref() {
                 f();
             }
@@ -1642,8 +1645,6 @@ pub(super) fn open_file_diff(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tab_left_path = dv.left_tab_path.clone();
-    let tab_right_path = dv.right_tab_path.clone();
     open_tabs.borrow_mut().push(FileTab {
         id: tab_id,
         rel_path: rel_path.to_string(),
@@ -1678,15 +1679,14 @@ pub(super) fn open_file_diff(
     tab_label_box.append(&label);
     tab_label_box.append(&close_btn);
 
-    // Update tab label and FileTab paths when panes are swapped
+    // Update tab label when panes are swapped (FileTab paths are swapped
+    // centrally in build_diff_view's swap handler)
     {
         let lbl = label.clone();
         let ln = left_dir_name;
         let rn = right_dir_name;
         let fn_ = file_name;
         let swapped = Rc::new(Cell::new(false));
-        let tlp = tab_left_path;
-        let trp = tab_right_path;
         *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
             let s = !swapped.get();
             swapped.set(s);
@@ -1695,7 +1695,6 @@ pub(super) fn open_file_diff(
             } else {
                 lbl.set_text(&format!("[{ln}] {fn_} — [{rn}] {fn_}"));
             }
-            std::mem::swap(&mut *tlp.borrow_mut(), &mut *trp.borrow_mut());
         }));
     }
 
@@ -1743,8 +1742,6 @@ pub(super) fn open_file_diff_paths(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tab_left_path = dv.left_tab_path.clone();
-    let tab_right_path = dv.right_tab_path.clone();
 
     let left_name = left_path.file_name().map_or_else(
         || left_path.display().to_string(),
@@ -1775,14 +1772,13 @@ pub(super) fn open_file_diff_paths(
     tab_label_box.append(&label);
     tab_label_box.append(&close_btn);
 
-    // Update tab label when panes are swapped
+    // Update tab label when panes are swapped (FileTab paths are swapped
+    // centrally in build_diff_view's swap handler)
     {
         let lbl = label.clone();
         let ln = left_name;
         let rn = right_name;
         let swapped = Rc::new(Cell::new(false));
-        let tlp = tab_left_path;
-        let trp = tab_right_path;
         *dv.swap_callback.borrow_mut() = Some(Box::new(move || {
             let s = !swapped.get();
             swapped.set(s);
@@ -1791,7 +1787,6 @@ pub(super) fn open_file_diff_paths(
             } else {
                 lbl.set_text(&format!("{ln} — {rn}"));
             }
-            std::mem::swap(&mut *tlp.borrow_mut(), &mut *trp.borrow_mut());
         }));
     }
 

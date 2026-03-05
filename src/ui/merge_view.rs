@@ -2863,10 +2863,22 @@ pub(super) fn build_merge_window(
             // Also collect from any file diff tabs opened via New Comparison
             for t in tabs.borrow().iter() {
                 if t.left_save.is_sensitive() {
-                    unsaved.push((t.left_path.borrow().clone(), t.left_save.clone()));
+                    let path = t.left_path.borrow();
+                    let label = if path.is_empty() {
+                        "Untitled".to_string()
+                    } else {
+                        path.clone()
+                    };
+                    unsaved.push((label, t.left_save.clone()));
                 }
                 if t.right_save.is_sensitive() {
-                    unsaved.push((t.right_path.borrow().clone(), t.right_save.clone()));
+                    let path = t.right_path.borrow();
+                    let label = if path.is_empty() {
+                        "Untitled".to_string()
+                    } else {
+                        path.clone()
+                    };
+                    unsaved.push((label, t.right_save.clone()));
                 }
             }
             if unsaved.is_empty() {

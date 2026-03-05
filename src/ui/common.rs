@@ -3065,8 +3065,8 @@ pub(super) fn make_welcome_button(title_text: &str, subtitle_text: &str) -> Butt
 /// Append a "New Comparison" tab to the given notebook with buttons to start
 /// file, directory, or 3-way merge comparisons.
 ///
-/// "Compare Files" opens a file diff as a tab in the current notebook.
-/// "Compare Directories" and "3-way Merge" open new windows.
+/// "Compare Files", "Compare Directories", and "3-way Merge" all open
+/// comparisons as tabs in the current notebook.
 pub(super) fn build_new_comparison_tab(
     notebook: &Notebook,
     settings: &Rc<RefCell<Settings>>,
