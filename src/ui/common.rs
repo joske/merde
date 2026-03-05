@@ -3204,7 +3204,7 @@ pub(super) fn build_new_comparison_tab(
                         if let Ok(second) = result2
                             && let Some(second_path) = second.path()
                         {
-                            let (dir_widget, watcher_alive, left_view, dir_title) =
+                            let (dir_widget, dir_watcher, left_view, dir_title) =
                                 build_dir_tab(first_path, second_path, st3, &nb3, &tabs3);
 
                             // Tab label with close button
@@ -3222,7 +3222,7 @@ pub(super) fn build_new_comparison_tab(
                             // (close button, Ctrl+W, window close)
                             {
                                 let dw2 = dir_widget.clone();
-                                let wa = watcher_alive.clone();
+                                let wa = dir_watcher.alive.clone();
                                 nb3.connect_page_removed(move |_, child, _| {
                                     if *child == dw2 {
                                         wa.set(false);
@@ -3411,6 +3411,603 @@ pub(super) fn build_new_comparison_tab(
                 nb.remove_page(Some(n));
             }
         });
+    }
+}
+
+// ─── File watcher helper ───────────────────────────────────────────────────
+
+pub(super) struct FileWatcher {
+    pub(super) alive: Rc<Cell<bool>>,
+}
+
+/// Start a file watcher that polls for changes every 500 ms.
+///
+/// `on_tick(fs_dirty)` is called every 500 ms. `fs_dirty` is `true` when at
+/// least one filesystem event arrived since the last tick.  The `filter`
+/// callback (called on the watcher thread) can suppress events — return
+/// `false` to ignore an event (e.g. events inside `.git/`).
+///
+/// The returned `FileWatcher::alive` flag should be set to `false` from a
+/// `connect_destroy` handler so the poll loop stops.
+type EventFilter = Box<dyn Fn(&notify::Event) -> bool + Send>;
+
+pub(super) fn start_file_watcher(
+    paths: &[&Path],
+    recursive: bool,
+    filter: Option<EventFilter>,
+    on_tick: impl FnMut(bool) + 'static,
+) -> FileWatcher {
+    use notify::{RecursiveMode, Watcher};
+
+    let alive = Rc::new(Cell::new(true));
+    let (fs_tx, fs_rx) = mpsc::channel::<()>();
+
+    let watcher = {
+        let mut w =
+            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(event) = res
+                    && filter.as_ref().is_none_or(|f| f(&event))
+                {
+                    let _ = fs_tx.send(());
+                }
+            })
+            .expect("Failed to create file watcher");
+        let mode = if recursive {
+            RecursiveMode::Recursive
+        } else {
+            RecursiveMode::NonRecursive
+        };
+        for p in paths {
+            w.watch(p, mode).ok();
+        }
+        w
+    };
+
+    let alive2 = alive.clone();
+    let mut on_tick = on_tick;
+    gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+        let _ = &watcher; // prevent drop; watcher lives until closure is dropped
+        if !alive2.get() {
+            return gtk4::glib::ControlFlow::Break;
+        }
+        let mut fs_dirty = false;
+        while fs_rx.try_recv().is_ok() {
+            fs_dirty = true;
+        }
+        on_tick(fs_dirty);
+        gtk4::glib::ControlFlow::Continue
+    });
+
+    FileWatcher { alive }
+}
+
+// ─── Find/replace bar + goto-line ──────────────────────────────────────────
+
+pub(super) struct FindBar {
+    pub(super) revealer: Revealer,
+    pub(super) goto_entry: Entry,
+}
+
+/// Build the find/replace bar and goto-line entry, registering find/find-next/
+/// find-prev/find-replace/go-to-line actions on `action_group`.
+pub(super) fn build_find_bar(
+    action_group: &gio::SimpleActionGroup,
+    active_view: &Rc<RefCell<TextView>>,
+    fallback_scroll: &ScrolledWindow,
+    buffers: &[TextBuffer],
+) -> FindBar {
+    // ── Widget construction ─────────────────────────────────────────
+    let find_entry = Entry::new();
+    find_entry.set_placeholder_text(Some(&format!("Find ({}+F)", primary_key_name())));
+    find_entry.set_hexpand(true);
+
+    let replace_entry = Entry::new();
+    replace_entry.set_placeholder_text(Some("Replace"));
+    replace_entry.set_hexpand(true);
+
+    let find_prev_btn = Button::from_icon_name("go-up-symbolic");
+    find_prev_btn.set_tooltip_text(Some("Previous match (Shift+F3)"));
+    let find_next_btn = Button::from_icon_name("go-down-symbolic");
+    find_next_btn.set_tooltip_text(Some("Next match (F3)"));
+    let match_label = Label::new(None);
+    match_label.add_css_class("chunk-label");
+    let find_close_btn = Button::from_icon_name("window-close-symbolic");
+    find_close_btn.set_has_frame(false);
+    find_close_btn.set_tooltip_text(Some("Close (Escape)"));
+
+    let replace_btn = Button::with_label("Replace");
+    let replace_all_btn = Button::with_label("All");
+    let replace_row = GtkBox::new(Orientation::Horizontal, 4);
+    replace_row.set_margin_start(6);
+    replace_row.set_margin_end(6);
+    replace_row.append(&replace_entry);
+    replace_row.append(&replace_btn);
+    replace_row.append(&replace_all_btn);
+    replace_row.set_visible(false);
+
+    let find_nav = GtkBox::new(Orientation::Horizontal, 0);
+    find_nav.add_css_class("linked");
+    find_nav.append(&find_prev_btn);
+    find_nav.append(&find_next_btn);
+
+    let find_row = GtkBox::new(Orientation::Horizontal, 4);
+    find_row.set_margin_start(6);
+    find_row.set_margin_end(6);
+    find_row.append(&find_entry);
+    find_row.append(&find_nav);
+    find_row.append(&match_label);
+    find_row.append(&find_close_btn);
+
+    let find_bar = GtkBox::new(Orientation::Vertical, 2);
+    find_bar.add_css_class("find-bar");
+    find_bar.append(&find_row);
+    find_bar.append(&replace_row);
+
+    let find_revealer = Revealer::new();
+    find_revealer.set_child(Some(&find_bar));
+    find_revealer.set_reveal_child(false);
+    find_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideUp);
+
+    // ── Search logic: highlight matches in all buffers ───────────────
+    {
+        let bufs: Vec<TextBuffer> = buffers.to_vec();
+        let ml = match_label.clone();
+        find_entry.connect_changed(move |e| {
+            let needle = e.text().to_string();
+            let total: usize = bufs
+                .iter()
+                .map(|b| highlight_search_matches(b, &needle))
+                .sum();
+            if needle.is_empty() {
+                ml.set_label("");
+            } else if total == 0 {
+                ml.set_label("No matches");
+            } else {
+                ml.set_label(&format!("{total} matches"));
+            }
+        });
+    }
+
+    // ── Find next button ─────────────────────────────────────────────
+    {
+        let av = active_view.clone();
+        let fe = find_entry.clone();
+        let fs = fallback_scroll.clone();
+        find_next_btn.connect_clicked(move |_| {
+            let needle = fe.text().to_string();
+            let tv = av.borrow().clone();
+            let buf = tv.buffer();
+            let cursor = buf.iter_at_mark(&buf.get_insert());
+            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
+                buf.select_range(&start, &end);
+                let scroll = scroll_for_view(&tv, &fs);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
+            }
+        });
+    }
+
+    // ── Find prev button ─────────────────────────────────────────────
+    {
+        let av = active_view.clone();
+        let fe = find_entry.clone();
+        let fs = fallback_scroll.clone();
+        find_prev_btn.connect_clicked(move |_| {
+            let needle = fe.text().to_string();
+            let tv = av.borrow().clone();
+            let buf = tv.buffer();
+            let cursor = buf.iter_at_mark(&buf.get_insert());
+            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
+                buf.select_range(&start, &end);
+                let scroll = scroll_for_view(&tv, &fs);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
+            }
+        });
+    }
+
+    // ── Enter in find entry = find next ──────────────────────────────
+    {
+        let av = active_view.clone();
+        let fs = fallback_scroll.clone();
+        find_entry.connect_activate(move |e| {
+            let needle = e.text().to_string();
+            let tv = av.borrow().clone();
+            let buf = tv.buffer();
+            let cursor = buf.iter_at_mark(&buf.get_insert());
+            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
+                buf.select_range(&start, &end);
+                let scroll = scroll_for_view(&tv, &fs);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
+            }
+        });
+    }
+
+    // ── Replace ──────────────────────────────────────────────────────
+    {
+        let av = active_view.clone();
+        let find_e = find_entry.clone();
+        let repl_e = replace_entry.clone();
+        replace_btn.connect_clicked(move |_| {
+            let tv = av.borrow().clone();
+            let buf = tv.buffer();
+            let (sel_start, sel_end) = buf.selection_bounds().unwrap_or_else(|| {
+                let c = buf.iter_at_mark(&buf.get_insert());
+                (c, c)
+            });
+            let selected = buf.text(&sel_start, &sel_end, false).to_string();
+            let needle = find_e.text().to_string();
+            if !needle.is_empty() && selected.to_lowercase() == needle.to_lowercase() {
+                let replacement = repl_e.text().to_string();
+                let mut s = sel_start;
+                let mut e = sel_end;
+                buf.delete(&mut s, &mut e);
+                buf.insert(&mut s, &replacement);
+            }
+        });
+    }
+
+    // ── Replace all ──────────────────────────────────────────────────
+    {
+        let bufs: Vec<TextBuffer> = buffers.to_vec();
+        let find_e = find_entry.clone();
+        let repl_e = replace_entry.clone();
+        replace_all_btn.connect_clicked(move |_| {
+            let needle = find_e.text().to_string();
+            let replacement = repl_e.text().to_string();
+            if needle.is_empty() {
+                return;
+            }
+            let needle_lower = needle.to_lowercase();
+            for buf in &bufs {
+                let text = buf
+                    .text(&buf.start_iter(), &buf.end_iter(), false)
+                    .to_string();
+                let mut new_text = String::with_capacity(text.len());
+                let mut remaining = text.as_str();
+                while let Some(pos) = remaining.to_lowercase().find(&needle_lower) {
+                    new_text.push_str(&remaining[..pos]);
+                    new_text.push_str(&replacement);
+                    remaining = &remaining[(pos + needle.len())..];
+                }
+                new_text.push_str(remaining);
+                if new_text != text {
+                    buf.set_text(&new_text);
+                }
+            }
+        });
+    }
+
+    // ── Close find bar ───────────────────────────────────────────────
+    {
+        let fr = find_revealer.clone();
+        let bufs: Vec<TextBuffer> = buffers.to_vec();
+        find_close_btn.connect_clicked(move |_| {
+            fr.set_reveal_child(false);
+            for b in &bufs {
+                clear_search_tags(b);
+            }
+        });
+    }
+
+    // ── Escape / F3 in find and replace entries ──────────────────────
+    for entry in [&find_entry, &replace_entry] {
+        let fr = find_revealer.clone();
+        let bufs: Vec<TextBuffer> = buffers.to_vec();
+        let fnb = find_next_btn.clone();
+        let fpb = find_prev_btn.clone();
+        let key_ctl = EventControllerKey::new();
+        key_ctl.connect_key_pressed(move |_, key, _, mods| {
+            if key == gtk4::gdk::Key::Escape {
+                fr.set_reveal_child(false);
+                for b in &bufs {
+                    clear_search_tags(b);
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+            if key == gtk4::gdk::Key::F3 {
+                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
+                    fpb.emit_clicked();
+                } else {
+                    fnb.emit_clicked();
+                }
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        entry.add_controller(key_ctl);
+    }
+
+    // ── Goto-line entry ──────────────────────────────────────────────
+    let goto_entry = Entry::new();
+    goto_entry.set_placeholder_text(Some("Line #"));
+    goto_entry.set_width_chars(8);
+    goto_entry.add_css_class("goto-entry");
+    goto_entry.set_visible(false);
+    {
+        let av = active_view.clone();
+        let fs = fallback_scroll.clone();
+        let entry = goto_entry.clone();
+        goto_entry.connect_activate(move |e| {
+            if let Ok(line) = e.text().trim().parse::<usize>() {
+                let tv = av.borrow().clone();
+                let buf = tv.buffer();
+                let target = line.saturating_sub(1);
+                let scroll = scroll_for_view(&tv, &fs);
+                scroll_to_line(&tv, &buf, target, &scroll);
+                if let Some(iter) = buf.iter_at_line(target as i32) {
+                    buf.place_cursor(&iter);
+                }
+                tv.grab_focus();
+            }
+            e.set_visible(false);
+            entry.set_text("");
+        });
+    }
+    {
+        let entry = goto_entry.clone();
+        let key_ctl = EventControllerKey::new();
+        key_ctl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Escape {
+                entry.set_visible(false);
+                entry.set_text("");
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        goto_entry.add_controller(key_ctl);
+    }
+
+    // ── Register actions ─────────────────────────────────────────────
+    {
+        let action = gio::SimpleAction::new("find", None);
+        let fr = find_revealer.clone();
+        let fe = find_entry.clone();
+        let rr = replace_row.clone();
+        action.connect_activate(move |_, _| {
+            rr.set_visible(false);
+            fr.set_reveal_child(true);
+            fe.grab_focus();
+        });
+        action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("find-replace", None);
+        let fr = find_revealer.clone();
+        let fe = find_entry.clone();
+        let rr = replace_row.clone();
+        action.connect_activate(move |_, _| {
+            rr.set_visible(true);
+            fr.set_reveal_child(true);
+            fe.grab_focus();
+        });
+        action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("find-next", None);
+        let av = active_view.clone();
+        let fe = find_entry.clone();
+        let fs = fallback_scroll.clone();
+        action.connect_activate(move |_, _| {
+            let needle = fe.text().to_string();
+            let tv = av.borrow().clone();
+            let buf = tv.buffer();
+            let cursor = buf.iter_at_mark(&buf.get_insert());
+            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
+                buf.select_range(&start, &end);
+                let scroll = scroll_for_view(&tv, &fs);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
+            }
+        });
+        action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("find-prev", None);
+        let av = active_view.clone();
+        let fe = find_entry.clone();
+        let fs = fallback_scroll.clone();
+        action.connect_activate(move |_, _| {
+            let needle = fe.text().to_string();
+            let tv = av.borrow().clone();
+            let buf = tv.buffer();
+            let cursor = buf.iter_at_mark(&buf.get_insert());
+            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
+                buf.select_range(&start, &end);
+                let scroll = scroll_for_view(&tv, &fs);
+                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
+            }
+        });
+        action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("go-to-line", None);
+        let ge = goto_entry.clone();
+        action.connect_activate(move |_, _| {
+            ge.set_visible(true);
+            ge.grab_focus();
+        });
+        action_group.add_action(&action);
+    }
+
+    FindBar {
+        revealer: find_revealer,
+        goto_entry,
+    }
+}
+
+// ─── Shared toolbar widget helpers ─────────────────────────────────────────
+
+/// Create a pair of prev/next navigation buttons in a linked box.
+pub(super) fn build_nav_button_group(
+    prev_tooltip: &str,
+    next_tooltip: &str,
+) -> (Button, Button, GtkBox) {
+    let prev_btn = Button::from_icon_name("go-up-symbolic");
+    prev_btn.set_tooltip_text(Some(prev_tooltip));
+    let next_btn = Button::from_icon_name("go-down-symbolic");
+    next_btn.set_tooltip_text(Some(next_tooltip));
+    let nav_box = GtkBox::new(Orientation::Horizontal, 0);
+    nav_box.add_css_class("linked");
+    nav_box.append(&prev_btn);
+    nav_box.append(&next_btn);
+    (prev_btn, next_btn, nav_box)
+}
+
+/// Create undo/redo buttons wired to the active view's buffer.
+pub(super) fn build_undo_redo_box(active_view: &Rc<RefCell<TextView>>) -> (Button, Button, GtkBox) {
+    let undo_btn = Button::from_icon_name("edit-undo-symbolic");
+    undo_btn.set_tooltip_text(Some(&format!("Undo ({}+Z)", primary_key_name())));
+    let redo_btn = Button::from_icon_name("edit-redo-symbolic");
+    redo_btn.set_tooltip_text(Some(&format!("Redo ({}+Shift+Z)", primary_key_name())));
+    let undo_redo_box = GtkBox::new(Orientation::Horizontal, 0);
+    undo_redo_box.add_css_class("linked");
+    undo_redo_box.append(&undo_btn);
+    undo_redo_box.append(&redo_btn);
+    {
+        let av = active_view.clone();
+        undo_btn.connect_clicked(move |_| {
+            let buf = av.borrow().buffer();
+            if buf.can_undo() {
+                buf.undo();
+            }
+        });
+    }
+    {
+        let av = active_view.clone();
+        redo_btn.connect_clicked(move |_| {
+            let buf = av.borrow().buffer();
+            if buf.can_redo() {
+                buf.redo();
+            }
+        });
+    }
+    (undo_btn, redo_btn, undo_redo_box)
+}
+
+/// Create blank-line and whitespace filter toggle buttons in a linked box.
+pub(super) fn build_filter_toggles(
+    ignore_blanks: bool,
+    ignore_whitespace: bool,
+) -> (ToggleButton, ToggleButton, GtkBox) {
+    let blank_toggle = ToggleButton::with_label("Blanks");
+    blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
+    blank_toggle.set_active(ignore_blanks);
+    let ws_toggle = ToggleButton::with_label("Spaces");
+    ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
+    ws_toggle.set_active(ignore_whitespace);
+    let filter_box = GtkBox::new(Orientation::Horizontal, 0);
+    filter_box.add_css_class("linked");
+    filter_box.append(&blank_toggle);
+    filter_box.append(&ws_toggle);
+    (blank_toggle, ws_toggle, filter_box)
+}
+
+// ─── Shared app window builder ─────────────────────────────────────────────
+
+pub(super) struct AppWindow {
+    pub(super) window: ApplicationWindow,
+    pub(super) notebook: Notebook,
+    pub(super) open_tabs: Rc<RefCell<Vec<FileTab>>>,
+}
+
+/// Create an `ApplicationWindow` with a `Notebook`, shared win actions
+/// (prefs, close-tab, new-comparison, tab navigation), close-request handler,
+/// and the superset of all keyboard accelerators.
+///
+/// When `pinned_first_tab` is true, Ctrl+W on page 0 always closes the window.
+/// When false (file window), Ctrl+W on page 0 uses `close_notebook_tab` if
+/// there are other tabs open.
+pub(super) fn build_app_window(
+    app: &Application,
+    settings: &Rc<RefCell<Settings>>,
+    default_width: i32,
+    default_height: i32,
+    pinned_first_tab: bool,
+) -> AppWindow {
+    let notebook = Notebook::new();
+    notebook.set_scrollable(true);
+
+    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+
+    let window = ApplicationWindow::builder()
+        .application(app)
+        .title("Mergers")
+        .default_width(default_width)
+        .default_height(default_height)
+        .child(&notebook)
+        .build();
+
+    // ── Win actions ──────────────────────────────────────────────────
+    let win_actions = gio::SimpleActionGroup::new();
+    {
+        let action = gio::SimpleAction::new("prefs", None);
+        let w = window.clone();
+        let st = settings.clone();
+        action.connect_activate(move |_, _| {
+            show_preferences(&w, &st);
+        });
+        win_actions.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("close-tab", None);
+        let nb = notebook.clone();
+        let w = window.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| match nb.current_page() {
+            Some(0) | None if pinned_first_tab => w.close(),
+            None | Some(0) if nb.n_pages() <= 1 => w.close(),
+            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
+            None => w.close(),
+        });
+        win_actions.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("new-comparison", None);
+        let nb = notebook.clone();
+        let st = settings.clone();
+        let tabs = open_tabs.clone();
+        action.connect_activate(move |_, _| {
+            build_new_comparison_tab(&nb, &st, &tabs);
+        });
+        win_actions.add_action(&action);
+    }
+    add_tab_navigation_actions(&win_actions, &notebook);
+    window.insert_action_group("win", Some(&win_actions));
+    add_tab_navigation_keys(&window);
+
+    // ── Unsaved-changes guard ────────────────────────────────────────
+    {
+        let tabs = open_tabs.clone();
+        window.connect_close_request(move |w| handle_notebook_close_request(w, &tabs));
+    }
+
+    // ── Keyboard accelerators (superset of all window types) ─────────
+    if let Some(gtk_app) = window.application() {
+        // Diff actions (active when a diff/merge tab is focused)
+        set_platform_accels(&gtk_app, "diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
+        set_platform_accels(&gtk_app, "diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
+        set_platform_accels(&gtk_app, "diff.find", &["<Ctrl>f"]);
+        set_platform_accels(&gtk_app, "diff.find-replace", &["<Ctrl>h"]);
+        gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
+        gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
+        set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);
+        set_platform_accels(&gtk_app, "diff.export-patch", &["<Ctrl><Shift>p"]);
+        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
+        set_platform_accels(&gtk_app, "diff.refresh", &["<Ctrl>r"]);
+        set_platform_accels(&gtk_app, "diff.open-externally", &["<Ctrl><Shift>o"]);
+        set_platform_accels(&gtk_app, "diff.save-as", &["<Ctrl><Shift>s"]);
+        set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
+        // Merge-specific diff actions
+        set_platform_accels(&gtk_app, "diff.prev-conflict", &["<Ctrl>j"]);
+        set_platform_accels(&gtk_app, "diff.next-conflict", &["<Ctrl>k"]);
+        // Win actions
+        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
+        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
+        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
+    }
+
+    AppWindow {
+        window,
+        notebook,
+        open_tabs,
     }
 }
 

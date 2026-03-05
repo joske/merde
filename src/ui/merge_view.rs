@@ -798,38 +798,20 @@ pub(super) fn build_merge_view(
         }
     }
 
-    let prev_btn = Button::from_icon_name("go-up-symbolic");
-    prev_btn.set_tooltip_text(Some(&format!(
-        "Previous change (Alt+Up / {}+E)",
-        primary_key_name()
-    )));
+    let (prev_btn, next_btn, nav_box) = build_nav_button_group(
+        &format!("Previous change (Alt+Up / {}+E)", primary_key_name()),
+        &format!("Next change (Alt+Down / {}+D)", primary_key_name()),
+    );
     prev_btn.set_sensitive(false);
-    let next_btn = Button::from_icon_name("go-down-symbolic");
-    next_btn.set_tooltip_text(Some(&format!(
-        "Next change (Alt+Down / {}+D)",
-        primary_key_name()
-    )));
     next_btn.set_sensitive(false);
 
-    let nav_box = GtkBox::new(Orientation::Horizontal, 0);
-    nav_box.add_css_class("linked");
-    nav_box.append(&prev_btn);
-    nav_box.append(&next_btn);
-
     // Conflict navigation buttons
-    let prev_conflict_btn = Button::from_icon_name("go-up-symbolic");
-    prev_conflict_btn.set_tooltip_text(Some(&format!(
-        "Previous conflict ({}+J)",
-        primary_key_name()
-    )));
+    let (prev_conflict_btn, next_conflict_btn, conflict_nav_box) = build_nav_button_group(
+        &format!("Previous conflict ({}+J)", primary_key_name()),
+        &format!("Next conflict ({}+K)", primary_key_name()),
+    );
     prev_conflict_btn.set_sensitive(false);
-    let next_conflict_btn = Button::from_icon_name("go-down-symbolic");
-    next_conflict_btn.set_tooltip_text(Some(&format!("Next conflict ({}+K)", primary_key_name())));
     next_conflict_btn.set_sensitive(false);
-    let conflict_nav_box = GtkBox::new(Orientation::Horizontal, 0);
-    conflict_nav_box.add_css_class("linked");
-    conflict_nav_box.append(&prev_conflict_btn);
-    conflict_nav_box.append(&next_conflict_btn);
 
     let conflict_label = Label::new(None);
     conflict_label.add_css_class("chunk-label");
@@ -844,73 +826,18 @@ pub(super) fn build_merge_view(
 
     let current_conflict: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
-    // Undo/Redo buttons
-    let undo_btn = Button::from_icon_name("edit-undo-symbolic");
-    undo_btn.set_tooltip_text(Some(&format!("Undo ({}+Z)", primary_key_name())));
-    let redo_btn = Button::from_icon_name("edit-redo-symbolic");
-    redo_btn.set_tooltip_text(Some(&format!("Redo ({}+Shift+Z)", primary_key_name())));
-    let undo_redo_box = GtkBox::new(Orientation::Horizontal, 0);
-    undo_redo_box.add_css_class("linked");
-    undo_redo_box.append(&undo_btn);
-    undo_redo_box.append(&redo_btn);
-    {
-        let av = active_view.clone();
-        undo_btn.connect_clicked(move |_| {
-            let buf = av.borrow().buffer();
-            if buf.can_undo() {
-                buf.undo();
-            }
-        });
-    }
-    {
-        let av = active_view.clone();
-        redo_btn.connect_clicked(move |_| {
-            let buf = av.borrow().buffer();
-            if buf.can_redo() {
-                buf.redo();
-            }
-        });
-    }
+    let (_undo_btn, _redo_btn, undo_redo_box) = build_undo_redo_box(&active_view);
 
-    // Go to line entry (hidden by default)
-    let goto_entry = Entry::new();
-    goto_entry.set_placeholder_text(Some("Line #"));
-    goto_entry.set_width_chars(8);
-    goto_entry.add_css_class("goto-entry");
-    goto_entry.set_visible(false);
-    {
-        let av = active_view.clone();
-        let ms = middle_pane.scroll.clone();
-        let entry = goto_entry.clone();
-        goto_entry.connect_activate(move |e| {
-            if let Ok(line) = e.text().trim().parse::<usize>() {
-                let tv = av.borrow().clone();
-                let buf = tv.buffer();
-                let target = line.saturating_sub(1);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, target, &scroll);
-                if let Some(iter) = buf.iter_at_line(target as i32) {
-                    buf.place_cursor(&iter);
-                }
-                tv.grab_focus();
-            }
-            e.set_visible(false);
-            entry.set_text("");
-        });
-    }
-    {
-        let entry = goto_entry.clone();
-        let key_ctl = EventControllerKey::new();
-        key_ctl.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk4::gdk::Key::Escape {
-                entry.set_visible(false);
-                entry.set_text("");
-                return gtk4::glib::Propagation::Stop;
-            }
-            gtk4::glib::Propagation::Proceed
-        });
-        goto_entry.add_controller(key_ctl);
-    }
+    // ── Find bar (shared helper) ──────────────────────────────────
+    let action_group = gio::SimpleActionGroup::new();
+    let find = build_find_bar(
+        &action_group,
+        &active_view,
+        &middle_pane.scroll,
+        &[left_buf.clone(), middle_buf.clone(), right_buf.clone()],
+    );
+    let find_revealer = find.revealer;
+    let goto_entry = find.goto_entry;
 
     let toolbar = GtkBox::new(Orientation::Horizontal, 8);
     toolbar.set_margin_start(6);
@@ -918,16 +845,8 @@ pub(super) fn build_merge_view(
     toolbar.set_margin_top(4);
     toolbar.set_margin_bottom(4);
     // Text filter toggles
-    let blank_toggle = ToggleButton::with_label("Blanks");
-    blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
-    blank_toggle.set_active(ignore_blanks.get());
-    let ws_toggle = ToggleButton::with_label("Spaces");
-    ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
-    ws_toggle.set_active(ignore_whitespace.get());
-    let filter_box = GtkBox::new(Orientation::Horizontal, 0);
-    filter_box.add_css_class("linked");
-    filter_box.append(&blank_toggle);
-    filter_box.append(&ws_toggle);
+    let (blank_toggle, ws_toggle, filter_box) =
+        build_filter_toggles(ignore_blanks.get(), ignore_whitespace.get());
 
     let merge_prefs_btn = Button::from_icon_name("preferences-system-symbolic");
     merge_prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
@@ -1847,231 +1766,6 @@ pub(super) fn build_merge_view(
         }
     }
 
-    // ── Find bar for merge view ───────────────────────────────────
-    let find_entry = Entry::new();
-    find_entry.set_placeholder_text(Some(&format!("Find ({}+F)", primary_key_name())));
-    find_entry.set_hexpand(true);
-
-    let replace_entry = Entry::new();
-    replace_entry.set_placeholder_text(Some("Replace"));
-    replace_entry.set_hexpand(true);
-
-    let find_prev_btn = Button::from_icon_name("go-up-symbolic");
-    let find_next_btn = Button::from_icon_name("go-down-symbolic");
-    let match_label = Label::new(None);
-    match_label.add_css_class("chunk-label");
-    let find_close_btn = Button::from_icon_name("window-close-symbolic");
-    find_close_btn.set_has_frame(false);
-
-    let replace_btn = Button::with_label("Replace");
-    let replace_all_btn = Button::with_label("All");
-    let replace_row = GtkBox::new(Orientation::Horizontal, 4);
-    replace_row.set_margin_start(6);
-    replace_row.set_margin_end(6);
-    replace_row.append(&replace_entry);
-    replace_row.append(&replace_btn);
-    replace_row.append(&replace_all_btn);
-    replace_row.set_visible(false);
-
-    let find_nav = GtkBox::new(Orientation::Horizontal, 0);
-    find_nav.add_css_class("linked");
-    find_nav.append(&find_prev_btn);
-    find_nav.append(&find_next_btn);
-
-    let find_row = GtkBox::new(Orientation::Horizontal, 4);
-    find_row.set_margin_start(6);
-    find_row.set_margin_end(6);
-    find_row.append(&find_entry);
-    find_row.append(&find_nav);
-    find_row.append(&match_label);
-    find_row.append(&find_close_btn);
-
-    let find_bar = GtkBox::new(Orientation::Vertical, 2);
-    find_bar.add_css_class("find-bar");
-    find_bar.append(&find_row);
-    find_bar.append(&replace_row);
-
-    let find_revealer = Revealer::new();
-    find_revealer.set_child(Some(&find_bar));
-    find_revealer.set_reveal_child(false);
-    find_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideUp);
-
-    // Search logic
-    {
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let ml = match_label.clone();
-        find_entry.connect_changed(move |e| {
-            let needle = e.text().to_string();
-            let total = highlight_search_matches(&lb, &needle)
-                + highlight_search_matches(&mb, &needle)
-                + highlight_search_matches(&rb, &needle);
-            if needle.is_empty() {
-                ml.set_label("");
-            } else if total == 0 {
-                ml.set_label("No matches");
-            } else {
-                ml.set_label(&format!("{total} matches"));
-            }
-        });
-    }
-
-    // Find next
-    {
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ms = middle_pane.scroll.clone();
-        find_next_btn.connect_clicked(move |_| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Find prev
-    {
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ms = middle_pane.scroll.clone();
-        find_prev_btn.connect_clicked(move |_| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Enter in find entry = find next
-    {
-        let av = active_view.clone();
-        let ms = middle_pane.scroll.clone();
-        find_entry.connect_activate(move |e| {
-            let needle = e.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Replace
-    {
-        let av = active_view.clone();
-        let find_e = find_entry.clone();
-        let repl_e = replace_entry.clone();
-        replace_btn.connect_clicked(move |_| {
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let (sel_start, sel_end) = buf.selection_bounds().unwrap_or_else(|| {
-                let c = buf.iter_at_mark(&buf.get_insert());
-                (c, c)
-            });
-            let selected = buf.text(&sel_start, &sel_end, false).to_string();
-            let needle = find_e.text().to_string();
-            if !needle.is_empty() && selected.to_lowercase() == needle.to_lowercase() {
-                let replacement = repl_e.text().to_string();
-                let mut s = sel_start;
-                let mut e = sel_end;
-                buf.delete(&mut s, &mut e);
-                buf.insert(&mut s, &replacement);
-            }
-        });
-    }
-
-    // Replace all
-    {
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let find_e = find_entry.clone();
-        let repl_e = replace_entry.clone();
-        replace_all_btn.connect_clicked(move |_| {
-            let needle = find_e.text().to_string();
-            let replacement = repl_e.text().to_string();
-            if needle.is_empty() {
-                return;
-            }
-            let needle_lower = needle.to_lowercase();
-            for buf in [&lb, &mb, &rb] {
-                let text = buf
-                    .text(&buf.start_iter(), &buf.end_iter(), false)
-                    .to_string();
-                // Case-insensitive replace to match CASE_INSENSITIVE find
-                let mut new_text = String::with_capacity(text.len());
-                let mut remaining = text.as_str();
-                while let Some(pos) = remaining.to_lowercase().find(&needle_lower) {
-                    new_text.push_str(&remaining[..pos]);
-                    new_text.push_str(&replacement);
-                    remaining = &remaining[(pos + needle.len())..];
-                }
-                new_text.push_str(remaining);
-                if new_text != text {
-                    buf.set_text(&new_text);
-                }
-            }
-        });
-    }
-
-    // Close find bar
-    {
-        let fr = find_revealer.clone();
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        find_close_btn.connect_clicked(move |_| {
-            fr.set_reveal_child(false);
-            clear_search_tags(&lb);
-            clear_search_tags(&mb);
-            clear_search_tags(&rb);
-        });
-    }
-
-    // Escape / F3 in find and replace entries
-    for entry in [&find_entry, &replace_entry] {
-        let fr = find_revealer.clone();
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let fnb = find_next_btn.clone();
-        let fpb = find_prev_btn.clone();
-        let key_ctl = EventControllerKey::new();
-        key_ctl.connect_key_pressed(move |_, key, _, mods| {
-            if key == gtk4::gdk::Key::Escape {
-                fr.set_reveal_child(false);
-                clear_search_tags(&lb);
-                clear_search_tags(&mb);
-                clear_search_tags(&rb);
-                return gtk4::glib::Propagation::Stop;
-            }
-            if key == gtk4::gdk::Key::F3 {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    fpb.emit_clicked();
-                } else {
-                    fnb.emit_clicked();
-                }
-                return gtk4::glib::Propagation::Stop;
-            }
-            gtk4::glib::Propagation::Proceed
-        });
-        entry.add_controller(key_ctl);
-    }
-
     // Layout: [chunk_map | left pane | left_gutter | middle pane | right_gutter | right pane | chunk_map]
     let diff_row = GtkBox::new(Orientation::Horizontal, 0);
     left_pane.container.set_hexpand(true);
@@ -2092,8 +1786,7 @@ pub(super) fn build_merge_view(
     widget.append(&diff_row);
     widget.append(&find_revealer);
 
-    // GAction group for keyboard shortcuts
-    let action_group = gio::SimpleActionGroup::new();
+    // Remaining GActions for keyboard shortcuts
     {
         let action = gio::SimpleAction::new("prev-chunk", None);
         let lch = left_chunks.clone();
@@ -2288,81 +1981,6 @@ pub(super) fn build_merge_view(
         });
         action_group.add_action(&action);
     }
-    // Find action (Ctrl+F)
-    {
-        let action = gio::SimpleAction::new("find", None);
-        let fr = find_revealer.clone();
-        let fe = find_entry.clone();
-        let rr = replace_row.clone();
-        action.connect_activate(move |_, _| {
-            rr.set_visible(false);
-            fr.set_reveal_child(true);
-            fe.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-    // Find-replace action (Ctrl+H)
-    {
-        let action = gio::SimpleAction::new("find-replace", None);
-        let fr = find_revealer.clone();
-        let fe = find_entry.clone();
-        let rr = replace_row.clone();
-        action.connect_activate(move |_, _| {
-            rr.set_visible(true);
-            fr.set_reveal_child(true);
-            fe.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-    // Find next (F3)
-    {
-        let action = gio::SimpleAction::new("find-next", None);
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ms = middle_pane.scroll.clone();
-        action.connect_activate(move |_, _| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-        action_group.add_action(&action);
-    }
-    // Find prev (Shift+F3)
-    {
-        let action = gio::SimpleAction::new("find-prev", None);
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ms = middle_pane.scroll.clone();
-        action.connect_activate(move |_, _| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-        action_group.add_action(&action);
-    }
-    // Go to line (Ctrl+L)
-    {
-        let action = gio::SimpleAction::new("go-to-line", None);
-        let ge = goto_entry.clone();
-        action.connect_activate(move |_, _| {
-            ge.set_visible(true);
-            ge.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-
     // Ctrl+S: save middle pane (only editable pane in merge)
     {
         let action = gio::SimpleAction::new("save", None);
@@ -2672,111 +2290,77 @@ pub(super) fn build_merge_window(
     let mv = build_merge_view(&left_path, &middle_path, &right_path, labels, settings);
 
     // File watcher on all 3 files
-    let merge_watcher_alive = Rc::new(Cell::new(true));
-    let (fs_tx, fs_rx) = mpsc::channel::<()>();
-    let merge_watcher = {
-        use notify::{RecursiveMode, Watcher};
-        let op = middle_path.clone();
-        let mut w =
-            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if res.is_ok() {
-                    let _ = fs_tx.send(());
-                }
-            })
-            .expect("Failed to create file watcher");
-        for p in [&left_path, &op, &right_path] {
-            if let Some(parent) = p.parent() {
-                w.watch(parent, RecursiveMode::NonRecursive).ok();
-            }
+    let watch_paths: Vec<&Path> = [&left_path, &middle_path, &right_path]
+        .iter()
+        .filter_map(|p| p.parent())
+        .collect();
+    let lb = mv.left_buf.clone();
+    let mb = mv.middle_buf.clone();
+    let rb = mv.right_buf.clone();
+    let lp = left_path.clone();
+    let mp = middle_path.clone();
+    let rp = right_path.clone();
+    let m_save = mv.middle_save.clone();
+    let loading = Rc::new(Cell::new(false));
+    let dirty = Rc::new(Cell::new(false));
+    let retry_count = Rc::new(Cell::new(0u32));
+    let merge_watcher = start_file_watcher(&watch_paths, false, None, move |fs_dirty| {
+        if fs_dirty {
+            dirty.set(true);
+            retry_count.set(0);
         }
-        w
-    };
-
-    // Poll for filesystem changes and reload
-    {
-        let lb = mv.left_buf.clone();
-        let mb = mv.middle_buf.clone();
-        let rb = mv.right_buf.clone();
-        let lp = left_path.clone();
-        let mp = middle_path.clone();
-        let rp = right_path.clone();
-        let m_save = mv.middle_save.clone();
-        let alive = merge_watcher_alive.clone();
-        let loading = Rc::new(Cell::new(false));
-        let dirty = Rc::new(Cell::new(false));
-        let retry_count = Rc::new(Cell::new(0u32));
-        gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
-            let _ = &merge_watcher; // prevent drop; watcher lives until closure is dropped
-            if !alive.get() {
-                return gtk4::glib::ControlFlow::Break;
-            }
-            while fs_rx.try_recv().is_ok() {
-                dirty.set(true);
-                retry_count.set(0); // new FS event resets the retry counter
-            }
-            if dirty.get()
-                && !loading.get()
-                && !is_saving(&[&lp, &mp, &rp])
-                && !m_save.is_sensitive()
-            {
-                dirty.set(false);
-                loading.set(true);
-                let lp2 = lp.clone();
-                let mp2 = mp.clone();
-                let rp2 = rp.clone();
-                let lb2 = lb.clone();
-                let mb2 = mb.clone();
-                let rb2 = rb.clone();
-                let m_save2 = m_save.clone();
-                let loading2 = loading.clone();
-                let dirty2 = dirty.clone();
-                let retry2 = retry_count.clone();
-                gtk4::glib::spawn_future_local(async move {
-                    let (left_content, middle_content, right_content) =
-                        gio::spawn_blocking(move || {
-                            (
-                                read_file_for_reload(&lp2),
-                                read_file_for_reload(&mp2),
-                                read_file_for_reload(&rp2),
-                            )
-                        })
-                        .await
-                        .unwrap();
-                    loading2.set(false);
-                    // Retry on next tick if any file became binary or unreadable
-                    let (Some(left_content), Some(middle_content), Some(right_content)) =
-                        (left_content, middle_content, right_content)
-                    else {
-                        let n = retry2.get() + 1;
-                        retry2.set(n);
-                        if n < 5 {
-                            dirty2.set(true);
-                        } else {
-                            eprintln!(
-                                "Giving up reload after {n} retries (file unreadable or binary)"
-                            );
-                        }
-                        return;
-                    };
-                    let cur_l = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
-                    let cur_m = mb2.text(&mb2.start_iter(), &mb2.end_iter(), false);
-                    let cur_r = rb2.text(&rb2.start_iter(), &rb2.end_iter(), false);
-                    if cur_l.as_str() != left_content
-                        || cur_m.as_str() != middle_content
-                        || cur_r.as_str() != right_content
-                    {
-                        // set_text triggers connect_changed which schedules
-                        // refresh_merge_diffs with the current filter state.
-                        lb2.set_text(&left_content);
-                        mb2.set_text(&middle_content);
-                        rb2.set_text(&right_content);
-                        m_save2.set_sensitive(false);
+        if dirty.get() && !loading.get() && !is_saving(&[&lp, &mp, &rp]) && !m_save.is_sensitive() {
+            dirty.set(false);
+            loading.set(true);
+            let lp2 = lp.clone();
+            let mp2 = mp.clone();
+            let rp2 = rp.clone();
+            let lb2 = lb.clone();
+            let mb2 = mb.clone();
+            let rb2 = rb.clone();
+            let m_save2 = m_save.clone();
+            let loading2 = loading.clone();
+            let dirty2 = dirty.clone();
+            let retry2 = retry_count.clone();
+            gtk4::glib::spawn_future_local(async move {
+                let (left_content, middle_content, right_content) =
+                    gio::spawn_blocking(move || {
+                        (
+                            read_file_for_reload(&lp2),
+                            read_file_for_reload(&mp2),
+                            read_file_for_reload(&rp2),
+                        )
+                    })
+                    .await
+                    .unwrap();
+                loading2.set(false);
+                let (Some(left_content), Some(middle_content), Some(right_content)) =
+                    (left_content, middle_content, right_content)
+                else {
+                    let n = retry2.get() + 1;
+                    retry2.set(n);
+                    if n < 5 {
+                        dirty2.set(true);
+                    } else {
+                        eprintln!("Giving up reload after {n} retries (file unreadable or binary)");
                     }
-                });
-            }
-            gtk4::glib::ControlFlow::Continue
-        });
-    }
+                    return;
+                };
+                let cur_l = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
+                let cur_m = mb2.text(&mb2.start_iter(), &mb2.end_iter(), false);
+                let cur_r = rb2.text(&rb2.start_iter(), &rb2.end_iter(), false);
+                if cur_l.as_str() != left_content
+                    || cur_m.as_str() != middle_content
+                    || cur_r.as_str() != right_content
+                {
+                    lb2.set_text(&left_content);
+                    mb2.set_text(&middle_content);
+                    rb2.set_text(&right_content);
+                    m_save2.set_sensitive(false);
+                }
+            });
+        }
+    });
 
     // Window title / tab title
     let left_name = left_path.file_name().map_or_else(
@@ -2793,125 +2377,39 @@ pub(super) fn build_merge_window(
     );
     let title = format!("{left_name} — {middle_name} — {right_name}");
 
-    // ── Notebook (tabs) ────────────────────────────────────────────
-    let notebook = Notebook::new();
-    notebook.set_scrollable(true);
+    // ── Window via shared helper ─────────────────────────────────────
+    let AppWindow {
+        window,
+        notebook,
+        open_tabs,
+    } = build_app_window(app, settings, 1200, 600, true);
+
+    mv.widget
+        .insert_action_group("diff", Some(&mv.action_group));
     notebook.append_page(&mv.widget, Some(&Label::new(Some(&title))));
 
-    // Track open file tabs (New Comparison tabs that open file diffs)
-    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
-
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("Mergers")
-        .default_width(1200)
-        .default_height(600)
-        .child(&notebook)
-        .build();
-    window.insert_action_group("diff", Some(&mv.action_group));
-
-    // Preferences action
-    let win_actions = gio::SimpleActionGroup::new();
+    // Register merge tab in open_tabs so the shared close_request handler
+    // picks up the middle_save unsaved state automatically.
     {
-        let action = gio::SimpleAction::new("prefs", None);
-        let w = window.clone();
-        let st = settings.clone();
-        action.connect_activate(move |_, _| {
-            show_preferences(&w, &st);
+        let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Dummy right_save button (never sensitive) — only middle_save matters.
+        let dummy_save = Button::new();
+        dummy_save.set_sensitive(false);
+        open_tabs.borrow_mut().push(FileTab {
+            id: tab_id,
+            rel_path: title,
+            widget: mv.widget.clone(),
+            left_path: Rc::new(RefCell::new(middle_path.display().to_string())),
+            right_path: Rc::new(RefCell::new(String::new())),
+            left_buf: mv.middle_buf.clone(),
+            right_buf: mv.middle_buf.clone(),
+            left_save: mv.middle_save,
+            right_save: dummy_save,
         });
-        win_actions.add_action(&action);
-    }
-    // Close-tab action (Ctrl+W) — close current tab or window
-    {
-        let action = gio::SimpleAction::new("close-tab", None);
-        let nb = notebook.clone();
-        let w = window.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| match nb.current_page() {
-            // Page 0 is the merge view — close entire window
-            Some(0) | None => w.close(),
-            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
-        });
-        win_actions.add_action(&action);
-    }
-    // New comparison (Ctrl+N)
-    {
-        let action = gio::SimpleAction::new("new-comparison", None);
-        let nb = notebook.clone();
-        let st = settings.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| {
-            build_new_comparison_tab(&nb, &st, &tabs);
-        });
-        win_actions.add_action(&action);
-    }
-    add_tab_navigation_actions(&win_actions, &notebook);
-    window.insert_action_group("win", Some(&win_actions));
-    add_tab_navigation_keys(&window);
-
-    // Unsaved-changes guard on window close button
-    {
-        let ms = mv.middle_save.clone();
-        let save_path = middle_path.display().to_string();
-        let tabs = open_tabs.clone();
-        window.connect_close_request(move |w| {
-            // Collect unsaved from the merge tab's middle save button
-            let mut unsaved: Vec<(String, Button)> = Vec::new();
-            if ms.is_sensitive() {
-                unsaved.push((save_path.clone(), ms.clone()));
-            }
-            // Also collect from any file diff tabs opened via New Comparison
-            for t in tabs.borrow().iter() {
-                if t.left_save.is_sensitive() {
-                    let path = t.left_path.borrow();
-                    let label = if path.is_empty() {
-                        "Untitled".to_string()
-                    } else {
-                        path.clone()
-                    };
-                    unsaved.push((label, t.left_save.clone()));
-                }
-                if t.right_save.is_sensitive() {
-                    let path = t.right_path.borrow();
-                    let label = if path.is_empty() {
-                        "Untitled".to_string()
-                    } else {
-                        path.clone()
-                    };
-                    unsaved.push((label, t.right_save.clone()));
-                }
-            }
-            if unsaved.is_empty() {
-                return gtk4::glib::Propagation::Proceed;
-            }
-            let w2 = w.clone();
-            confirm_unsaved_dialog(w, unsaved, move || w2.close());
-            gtk4::glib::Propagation::Stop
-        });
-    }
-
-    if let Some(gtk_app) = window.application() {
-        set_platform_accels(&gtk_app, "diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
-        set_platform_accels(&gtk_app, "diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
-        set_platform_accels(&gtk_app, "diff.prev-conflict", &["<Ctrl>j"]);
-        set_platform_accels(&gtk_app, "diff.next-conflict", &["<Ctrl>k"]);
-        set_platform_accels(&gtk_app, "diff.find", &["<Ctrl>f"]);
-        set_platform_accels(&gtk_app, "diff.find-replace", &["<Ctrl>h"]);
-        gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
-        gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
-        set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);
-        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
-        set_platform_accels(&gtk_app, "diff.refresh", &["<Ctrl>r"]);
-        set_platform_accels(&gtk_app, "diff.open-externally", &["<Ctrl><Shift>o"]);
-        set_platform_accels(&gtk_app, "diff.save-as", &["<Ctrl><Shift>s"]);
-        set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
-        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
-        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
-        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
     }
 
     window.connect_destroy(move |_| {
-        merge_watcher_alive.set(false);
+        merge_watcher.alive.set(false);
     });
 
     window.present();

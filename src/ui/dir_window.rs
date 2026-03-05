@@ -398,7 +398,7 @@ pub(super) fn build_dir_tab(
     settings: Rc<RefCell<Settings>>,
     notebook: &Notebook,
     open_tabs: &Rc<RefCell<Vec<FileTab>>>,
-) -> (GtkBox, Rc<Cell<bool>>, ColumnView, String) {
+) -> (GtkBox, FileWatcher, ColumnView, String) {
     let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
     let right_dir = Rc::new(RefCell::new(right_dir.to_string_lossy().into_owned()));
 
@@ -1476,44 +1476,27 @@ pub(super) fn build_dir_tab(
     }
 
     // ── File watcher ───────────────────────────────────────────────
-    let dir_watcher_alive = Rc::new(Cell::new(true));
-    let (fs_tx, fs_rx) = mpsc::channel::<()>();
-    let dir_watcher = {
-        use notify::{RecursiveMode, Watcher};
-        let ld = left_dir.borrow().clone();
-        let rd = right_dir.borrow().clone();
-        let mut w =
-            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if res.is_ok() {
-                    let _ = fs_tx.send(());
-                }
-            })
-            .expect("Failed to create file watcher");
-        w.watch(Path::new(&ld), RecursiveMode::Recursive).ok();
-        w.watch(Path::new(&rd), RecursiveMode::Recursive).ok();
-        w
-    };
-
-    // Poll for filesystem changes and reload
+    let ld_str = left_dir.borrow().clone();
+    let rd_str = right_dir.borrow().clone();
+    let ld_path = PathBuf::from(&ld_str);
+    let rd_path = PathBuf::from(&rd_str);
     let tabs_reload = open_tabs.clone();
     let ld_reload = left_dir.clone();
     let rd_reload = right_dir.clone();
-    {
-        let reload = reload_dir.clone();
-        let alive = dir_watcher_alive.clone();
-        let st = settings.clone();
-        let mut dirty = false;
-        let mut retry_count: u32 = 0;
-        let mut prev_hide_hidden = st.borrow().hide_hidden_files;
-        let mut prev_filters = st.borrow().dir_filters.clone();
-        gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
-            let _ = &dir_watcher; // prevent drop; watcher lives until closure is dropped
-            if !alive.get() {
-                return gtk4::glib::ControlFlow::Break;
-            }
-            while fs_rx.try_recv().is_ok() {
+    let reload = reload_dir.clone();
+    let st = settings.clone();
+    let mut dirty = false;
+    let mut retry_count: u32 = 0;
+    let mut prev_hide_hidden = st.borrow().hide_hidden_files;
+    let mut prev_filters = st.borrow().dir_filters.clone();
+    let dir_watcher = start_file_watcher(
+        &[ld_path.as_path(), rd_path.as_path()],
+        true,
+        None,
+        move |fs_dirty| {
+            if fs_dirty {
                 dirty = true;
-                retry_count = 0; // new FS event resets the retry counter
+                retry_count = 0;
             }
             // Also rescan when filter settings change (e.g. via live preferences)
             {
@@ -1532,7 +1515,6 @@ pub(super) fn build_dir_tab(
             {
                 dirty = false;
                 reload();
-                // Reload open file tabs; keep dirty if any tab read fails
                 let mut any_tab_failed = false;
                 for tab in tabs_reload.borrow().iter() {
                     if !reload_file_tab(tab) {
@@ -1551,9 +1533,8 @@ pub(super) fn build_dir_tab(
                     }
                 }
             }
-            gtk4::glib::ControlFlow::Continue
-        });
-    }
+        },
+    );
 
     // Build title
     let left_name = Path::new(left_dir.borrow().as_str())
@@ -1570,7 +1551,7 @@ pub(super) fn build_dir_tab(
         );
     let title = format!("{left_name} — {right_name}");
 
-    (dir_tab, dir_watcher_alive, left_view, title)
+    (dir_tab, dir_watcher, left_view, title)
 }
 
 // ─── Directory comparison window ───────────────────────────────────────────
@@ -1581,85 +1562,18 @@ pub(super) fn build_dir_window(
     right_dir: std::path::PathBuf,
     settings: Rc<RefCell<Settings>>,
 ) {
-    let notebook = Notebook::new();
-    notebook.set_scrollable(true);
-    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+    let AppWindow {
+        window,
+        notebook,
+        open_tabs,
+    } = build_app_window(app, &settings, 900, 600, true);
 
-    let (dir_tab, dir_watcher_alive, left_view, title) =
-        build_dir_tab(left_dir, right_dir, settings.clone(), &notebook, &open_tabs);
+    let (dir_tab, dir_watcher, left_view, title) =
+        build_dir_tab(left_dir, right_dir, settings, &notebook, &open_tabs);
     notebook.append_page(&dir_tab, Some(&Label::new(Some(&title))));
 
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("Mergers")
-        .default_width(900)
-        .default_height(600)
-        .child(&notebook)
-        .build();
-
-    // Preferences action
-    let win_actions = gio::SimpleActionGroup::new();
-    {
-        let action = gio::SimpleAction::new("prefs", None);
-        let w = window.clone();
-        let st = settings.clone();
-        action.connect_activate(move |_, _| {
-            show_preferences(&w, &st);
-        });
-        win_actions.add_action(&action);
-    }
-    // Close-tab action (Ctrl+W) — close current file tab or window
-    {
-        let action = gio::SimpleAction::new("close-tab", None);
-        let nb = notebook.clone();
-        let w = window.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| match nb.current_page() {
-            Some(0) | None => w.close(),
-            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
-        });
-        win_actions.add_action(&action);
-    }
-    // New comparison (Ctrl+N)
-    {
-        let action = gio::SimpleAction::new("new-comparison", None);
-        let nb = notebook.clone();
-        let st = settings.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| {
-            build_new_comparison_tab(&nb, &st, &tabs);
-        });
-        win_actions.add_action(&action);
-    }
-    add_tab_navigation_actions(&win_actions, &notebook);
-    window.insert_action_group("win", Some(&win_actions));
-    add_tab_navigation_keys(&window);
-
-    // Unsaved-changes guard on window close button
-    {
-        let tabs = open_tabs.clone();
-        window.connect_close_request(move |w| handle_notebook_close_request(w, &tabs));
-    }
-
-    // Register keyboard accelerators
-    if let Some(gtk_app) = window.application() {
-        // Diff navigation (used by file diff tabs)
-        set_platform_accels(&gtk_app, "diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
-        set_platform_accels(&gtk_app, "diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
-        set_platform_accels(&gtk_app, "diff.find", &["<Ctrl>f"]);
-        set_platform_accels(&gtk_app, "diff.find-replace", &["<Ctrl>h"]);
-        gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
-        gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
-        set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);
-        set_platform_accels(&gtk_app, "diff.export-patch", &["<Ctrl><Shift>p"]);
-        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
-        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
-        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
-        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
-    }
-
     window.connect_destroy(move |_| {
-        dir_watcher_alive.set(false);
+        dir_watcher.alive.set(false);
     });
     window.present();
     left_view.grab_focus();

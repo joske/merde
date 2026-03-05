@@ -349,12 +349,17 @@ pub(super) fn build_vcs_window(
     vcs_tab.append(&list_scroll);
     vcs_tab.set_vexpand(true);
 
-    // Notebook
-    let notebook = Notebook::new();
-    notebook.set_scrollable(true);
-    notebook.append_page(&vcs_tab, Some(&Label::new(Some("Changes"))));
-
-    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+    // ── Window via shared helper ─────────────────────────────────────
+    let repo_name = repo_root.file_name().map_or_else(
+        || repo_root.to_string_lossy().into_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let AppWindow {
+        window,
+        notebook,
+        open_tabs,
+    } = build_app_window(app, &settings, 700, 500, true);
+    window.set_title(Some(&format!("mergers — {repo_name} (git)")));
 
     // Open selected item helper (shared by double-click and Enter key)
     let open_selected = {
@@ -433,48 +438,23 @@ pub(super) fn build_vcs_window(
         refresh_btn.connect_clicked(move |_| r());
     }
 
-    // File watcher
-    let vcs_watcher_alive = Rc::new(Cell::new(true));
-    let (fs_tx, fs_rx) = mpsc::channel::<()>();
-    let vcs_watcher = {
-        use notify::{RecursiveMode, Watcher};
-        let mut w =
-            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if let Ok(event) = res {
-                    // Skip events inside .git directory (git status touches
-                    // index files, which would cause an infinite refresh loop)
-                    let dominated_by_git = event
-                        .paths
-                        .iter()
-                        .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
-                    if !dominated_by_git {
-                        let _ = fs_tx.send(());
-                    }
-                }
-            })
-            .expect("Failed to create file watcher");
-        w.watch(&repo_root, RecursiveMode::Recursive).ok();
-        w
-    };
-    {
-        let r = refresh.clone();
-        let alive = vcs_watcher_alive.clone();
-        let mut dirty = false;
-        gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
-            let _ = &vcs_watcher; // prevent drop; watcher lives until closure is dropped
-            if !alive.get() {
-                return gtk4::glib::ControlFlow::Break;
-            }
-            while fs_rx.try_recv().is_ok() {
-                dirty = true;
-            }
-            if dirty {
-                dirty = false;
+    // File watcher — skip events inside .git/ to avoid infinite refresh loops
+    let r = refresh.clone();
+    let vcs_watcher = start_file_watcher(
+        &[repo_root.as_path()],
+        true,
+        Some(Box::new(|event: &notify::Event| {
+            !event
+                .paths
+                .iter()
+                .all(|p| p.components().any(|c| c.as_os_str() == ".git"))
+        })),
+        move |fs_dirty| {
+            if fs_dirty {
                 r();
             }
-            gtk4::glib::ControlFlow::Continue
-        });
-    }
+        },
+    );
 
     // ── VCS context menu ──────────────────────────────────────────
     let vcs_action_group = gio::SimpleActionGroup::new();
@@ -622,78 +602,13 @@ pub(super) fn build_vcs_window(
         view.add_controller(gesture);
     }
 
-    // Window
-    let repo_name = repo_root.file_name().map_or_else(
-        || repo_root.to_string_lossy().into_owned(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title(format!("mergers — {repo_name} (git)"))
-        .default_width(700)
-        .default_height(500)
-        .child(&notebook)
-        .build();
-
-    // Preferences action
-    let win_actions = gio::SimpleActionGroup::new();
-    {
-        let action = gio::SimpleAction::new("prefs", None);
-        let w = window.clone();
-        let st = settings.clone();
-        action.connect_activate(move |_, _| {
-            show_preferences(&w, &st);
-        });
-        win_actions.add_action(&action);
-    }
-    // Close-tab action (Ctrl+W) — close current file tab or window
-    {
-        let action = gio::SimpleAction::new("close-tab", None);
-        let nb = notebook.clone();
-        let w = window.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| match nb.current_page() {
-            Some(0) | None => w.close(),
-            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
-        });
-        win_actions.add_action(&action);
-    }
-    // New comparison (Ctrl+N)
-    {
-        let action = gio::SimpleAction::new("new-comparison", None);
-        let nb = notebook.clone();
-        let st = settings.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| {
-            build_new_comparison_tab(&nb, &st, &tabs);
-        });
-        win_actions.add_action(&action);
-    }
-    add_tab_navigation_actions(&win_actions, &notebook);
-    window.insert_action_group("win", Some(&win_actions));
-    add_tab_navigation_keys(&window);
-
-    // Unsaved-changes guard on window close button
-    {
-        let tabs = open_tabs.clone();
-        window.connect_close_request(move |w| handle_notebook_close_request(w, &tabs));
-    }
-
-    if let Some(gtk_app) = window.application() {
-        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
-        set_platform_accels(&gtk_app, "diff.refresh", &["<Ctrl>r"]);
-        set_platform_accels(&gtk_app, "diff.open-externally", &["<Ctrl><Shift>o"]);
-        set_platform_accels(&gtk_app, "diff.save-as", &["<Ctrl><Shift>s"]);
-        set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
-        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
-        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
-        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
-    }
+    vcs_tab.insert_action_group("vcs", Some(&vcs_action_group));
+    notebook.append_page(&vcs_tab, Some(&Label::new(Some("Changes"))));
 
     // Clean up temp dir and stop watcher on destroy
     let td = temp_dir.clone();
     window.connect_destroy(move |_| {
-        vcs_watcher_alive.set(false);
+        vcs_watcher.alive.set(false);
         let _ = fs::remove_dir_all(&td);
     });
 
