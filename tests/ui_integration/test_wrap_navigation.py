@@ -1,10 +1,7 @@
 """Tests for wrap-around navigation setting via dogtail AT-SPI."""
 import re
-import subprocess
 
-from dogtail.utils import doDelay
-
-from conftest import find_app
+from conftest import find_app, send_keys_until
 
 
 def _open_diff(app_process, fixture_path):
@@ -13,24 +10,6 @@ def _open_diff(app_process, fixture_path):
     app = find_app()
     return app, proc
 
-
-def _send_keys(key_combo, pid):
-    """Focus the mergers window by PID and send a key combo via xdotool."""
-    wids = (
-        subprocess.check_output(["xdotool", "search", "--pid", str(pid)])
-        .decode()
-        .strip()
-        .splitlines()
-    )
-    assert wids, f"No window found for PID {pid}"
-    for wid in wids:
-        result = subprocess.run(
-            ["xdotool", "windowfocus", "--sync", wid],
-            capture_output=True,
-        )
-        if result.returncode == 0:
-            break
-    subprocess.run(["xdotool", "key", key_combo], check=True)
 
 
 def _get_chunk_label(app):
@@ -59,18 +38,22 @@ def test_no_wrap_by_default(app_process, fixture_path):
     app, proc = _open_diff(app_process, fixture_path)
 
     # Navigate to first chunk
-    _send_keys("ctrl+d", proc.pid)
-    doDelay(1)
-    label = _get_chunk_label(app)
+    label = send_keys_until(
+        app, "ctrl+d", proc.pid,
+        lambda t: "Change " in t and " of " in t,
+    )
     assert label is not None, "Chunk label not found after first Ctrl+D"
     parsed = _parse_chunk_label(label)
     assert parsed is not None, f"Could not parse chunk label: '{label}'"
     total = parsed[1]
 
     # Navigate to the last chunk
-    for _ in range(total - 1):
-        _send_keys("ctrl+d", proc.pid)
-        doDelay(0.5)
+    for i in range(total - 1):
+        expected = i + 2  # already at 1, so next is 2, 3, ...
+        send_keys_until(
+            app, "ctrl+d", proc.pid,
+            lambda t, e=expected: f"Change {e} of " in t,
+        )
 
     label = _get_chunk_label(app)
     parsed = _parse_chunk_label(label)
@@ -78,8 +61,10 @@ def test_no_wrap_by_default(app_process, fixture_path):
     assert parsed[0] == total, f"Expected to be at last chunk ({total}), got {parsed[0]}"
 
     # Press next again — should NOT wrap, label stays at last chunk
-    _send_keys("ctrl+d", proc.pid)
-    doDelay(1)
+    send_keys_until(
+        app, "ctrl+d", proc.pid,
+        lambda t: f"Change {total} of " in t,
+    )
     label = _get_chunk_label(app)
     parsed = _parse_chunk_label(label)
     assert parsed is not None, f"Could not parse chunk label: '{label}'"
