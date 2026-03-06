@@ -8,6 +8,7 @@ pub(super) struct MergeViewResult {
     pub(super) left_buf: TextBuffer,
     pub(super) middle_buf: TextBuffer,
     pub(super) right_buf: TextBuffer,
+    pub(super) middle_view: TextView,
     pub(super) middle_save: Button,
     pub(super) middle_tab_path: Rc<RefCell<String>>,
     pub(super) action_group: gio::SimpleActionGroup,
@@ -287,6 +288,89 @@ fn find_conflict_markers(buf: &TextBuffer) -> Vec<usize> {
 fn conflict_at_cursor(buf: &TextBuffer, cursor_line: usize) -> Option<usize> {
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
     super::merge_state::conflict_at_cursor(&text, cursor_line)
+}
+
+/// Find the next/prev navigation target on a side pane, treating each conflict
+/// band as a single entry.  Returns the chunk index in `my_chunks`.
+fn side_nav_find(
+    my_chunks: &[DiffChunk],
+    other_chunks: &[DiffChunk],
+    side: Side,
+    cl: usize,
+    direction: i32,
+    wrap: bool,
+) -> Option<usize> {
+    let merged = merged_gutter_chunks(my_chunks, other_chunks, side);
+    // Build navigation targets: (side_start, first_chunk_idx) for each merged
+    // non-equal entry.  Conflict bands get one entry using the band start and
+    // the first non-equal original chunk index inside them.
+    let targets: Vec<(usize, usize)> = merged
+        .iter()
+        .filter_map(|(mc, _is_cfl)| {
+            if mc.tag == DiffTag::Equal {
+                return None;
+            }
+            let band_start = if side == Side::A {
+                mc.start_a
+            } else {
+                mc.start_b
+            };
+            let band_end = if side == Side::A { mc.end_a } else { mc.end_b };
+            // Find the first non-equal original chunk whose side range falls
+            // within this merged band.
+            let first_idx = my_chunks.iter().enumerate().find_map(|(i, c)| {
+                if c.tag == DiffTag::Equal {
+                    return None;
+                }
+                let (cs, ce) = if side == Side::A {
+                    (c.start_a, c.end_a)
+                } else {
+                    (c.start_b, c.end_b)
+                };
+                if cs >= band_start && ce <= band_end {
+                    Some(i)
+                } else {
+                    None
+                }
+            })?;
+            Some((band_start, first_idx))
+        })
+        .collect();
+
+    let next = if direction > 0 {
+        targets
+            .iter()
+            .find(|(s, _)| *s > cl)
+            .or(if wrap { targets.first() } else { None })
+    } else {
+        targets
+            .iter()
+            .rev()
+            .find(|(s, _)| *s < cl)
+            .or(if wrap { targets.last() } else { None })
+    };
+    next.map(|&(_, idx)| idx)
+}
+
+/// If the cursor is inside a conflict region on the middle pane, adjust the
+/// cursor line to the region boundary so navigation skips the entire conflict.
+fn adjust_cl_for_middle_conflict(
+    cl: usize,
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+    direction: i32,
+) -> usize {
+    let regions = middle_conflict_regions(left_chunks, right_chunks);
+    for &(s, e) in &regions {
+        if cl >= s && cl < e {
+            return if direction > 0 {
+                e.saturating_sub(1)
+            } else {
+                s
+            };
+        }
+    }
+    cl
 }
 
 pub(super) fn build_merge_view(
@@ -658,6 +742,9 @@ pub(super) fn build_merge_view(
 
     // ── Toolbar with chunk navigation ───────────────────────────
     let current_chunk: Rc<Cell<Option<(usize, bool)>>> = Rc::new(Cell::new(None));
+    // Guard: set to true while navigate_merge_chunk is placing cursors so that
+    // cursor_position_notify handlers don't overwrite current_chunk.
+    let navigating: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     // ── Filler overlay drawing (3-way) ──────────────────────────
     {
@@ -671,9 +758,29 @@ pub(super) fn build_merge_view(
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
                 // Left pane shows a-side of left_chunks
-                let cur_left = cur.get().and_then(|(i, r)| if r { None } else { Some(i) });
-                draw_chunk_backgrounds(cr, w, &ltv, &ls, &lch.borrow(), Side::A, cur_left);
-                draw_side_conflict_strokes(cr, w, &ltv, &ls, &lch.borrow(), &rch.borrow(), Side::A);
+                let cur_val = cur.get();
+                let cur_left = cur_val.and_then(|(i, r)| if r { None } else { Some(i) });
+                let cfl = conflict_flags(&lch.borrow(), Side::B, &rch.borrow(), Side::A);
+                draw_chunk_backgrounds(
+                    cr,
+                    w,
+                    &ltv,
+                    &ls,
+                    &lch.borrow(),
+                    Side::A,
+                    cur_left,
+                    Some(&cfl),
+                );
+                draw_side_conflict_strokes(
+                    cr,
+                    w,
+                    &ltv,
+                    &ls,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                    Side::A,
+                    cur_val,
+                );
                 draw_merge_fillers(
                     cr,
                     w,
@@ -707,9 +814,29 @@ pub(super) fn build_merge_view(
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
                 // Right pane shows b-side of right_chunks
-                let cur_right = cur.get().and_then(|(i, r)| if r { Some(i) } else { None });
-                draw_chunk_backgrounds(cr, w, &rtv, &rs, &rch.borrow(), Side::B, cur_right);
-                draw_side_conflict_strokes(cr, w, &rtv, &rs, &lch.borrow(), &rch.borrow(), Side::B);
+                let cur_val = cur.get();
+                let cur_right = cur_val.and_then(|(i, r)| if r { Some(i) } else { None });
+                let cfr = conflict_flags(&rch.borrow(), Side::A, &lch.borrow(), Side::B);
+                draw_chunk_backgrounds(
+                    cr,
+                    w,
+                    &rtv,
+                    &rs,
+                    &rch.borrow(),
+                    Side::B,
+                    cur_right,
+                    Some(&cfr),
+                );
+                draw_side_conflict_strokes(
+                    cr,
+                    w,
+                    &rtv,
+                    &rs,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                    Side::B,
+                    cur_val,
+                );
                 draw_merge_fillers(
                     cr,
                     w,
@@ -742,13 +869,59 @@ pub(super) fn build_merge_view(
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
-                // Middle pane: b-side of left_chunks, a-side of right_chunks
+                // Middle pane: b-side of left_chunks, a-side of right_chunks.
+                // Conflict chunks are skipped — drawn by draw_conflict_backgrounds.
+                // Draw the non-current side first so the current side's bold
+                // borders are not painted over.
                 let cur_val = cur.get();
                 let cur_left = cur_val.and_then(|(i, r)| if r { None } else { Some(i) });
                 let cur_right = cur_val.and_then(|(i, r)| if r { Some(i) } else { None });
-                draw_chunk_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), Side::B, cur_left);
-                draw_chunk_backgrounds(cr, w, &mtv, &ms, &rch.borrow(), Side::A, cur_right);
-                draw_conflict_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), &rch.borrow());
+                let cfl = conflict_flags(&lch.borrow(), Side::B, &rch.borrow(), Side::A);
+                let cfr = conflict_flags(&rch.borrow(), Side::A, &lch.borrow(), Side::B);
+                if cur_right.is_some() {
+                    draw_chunk_backgrounds(
+                        cr,
+                        w,
+                        &mtv,
+                        &ms,
+                        &lch.borrow(),
+                        Side::B,
+                        cur_left,
+                        Some(&cfl),
+                    );
+                    draw_chunk_backgrounds(
+                        cr,
+                        w,
+                        &mtv,
+                        &ms,
+                        &rch.borrow(),
+                        Side::A,
+                        cur_right,
+                        Some(&cfr),
+                    );
+                } else {
+                    draw_chunk_backgrounds(
+                        cr,
+                        w,
+                        &mtv,
+                        &ms,
+                        &rch.borrow(),
+                        Side::A,
+                        cur_right,
+                        Some(&cfr),
+                    );
+                    draw_chunk_backgrounds(
+                        cr,
+                        w,
+                        &mtv,
+                        &ms,
+                        &lch.borrow(),
+                        Side::B,
+                        cur_left,
+                        Some(&cfl),
+                    );
+                }
+                draw_conflict_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), &rch.borrow(), cur_val);
                 draw_merge_fillers(
                     cr,
                     w,
@@ -871,6 +1044,7 @@ pub(super) fn build_merge_view(
     let navigate_merge_chunk = |lch: &[DiffChunk],
                                 rch: &[DiffChunk],
                                 cur: &Rc<Cell<Option<(usize, bool)>>>,
+                                nav_guard: &Rc<Cell<bool>>,
                                 direction: i32,
                                 ltv: &TextView,
                                 lb: &TextBuffer,
@@ -887,46 +1061,16 @@ pub(super) fn build_merge_view(
                                 active: &TextView,
                                 wrap: bool| {
         // Search the active pane's own chunks in its own coordinates.
+        // For conflict bands (multiple chunks merged into one visual block),
+        // use merged_gutter_chunks so the entire band counts as one
+        // navigation target, preventing stepping through individual chunks.
         let cl = cursor_line_from_view(active);
         let found: Option<(usize, bool)> = if active == ltv {
-            let ne: Vec<usize> = lch
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.tag != DiffTag::Equal)
-                .map(|(i, _)| i)
-                .collect();
-            let next = if direction > 0 {
-                ne.iter()
-                    .find(|&&i| lch[i].start_a > cl)
-                    .or(if wrap { ne.first() } else { None })
-            } else {
-                ne.iter().rev().find(|&&i| lch[i].start_a < cl).or(if wrap {
-                    ne.last()
-                } else {
-                    None
-                })
-            };
-            next.map(|&idx| (idx, false))
+            side_nav_find(lch, rch, Side::A, cl, direction, wrap).map(|i| (i, false))
         } else if active == rtv {
-            let ne: Vec<usize> = rch
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.tag != DiffTag::Equal)
-                .map(|(i, _)| i)
-                .collect();
-            let next = if direction > 0 {
-                ne.iter()
-                    .find(|&&i| rch[i].start_b > cl)
-                    .or(if wrap { ne.first() } else { None })
-            } else {
-                ne.iter().rev().find(|&&i| rch[i].start_b < cl).or(if wrap {
-                    ne.last()
-                } else {
-                    None
-                })
-            };
-            next.map(|&idx| (idx, true))
+            side_nav_find(rch, lch, Side::B, cl, direction, wrap).map(|i| (i, true))
         } else {
+            let cl = adjust_cl_for_middle_conflict(cl, lch, rch, direction);
             let all = merge_change_indices(lch, rch);
             let middle_line = |&(idx, is_right): &(usize, bool)| -> usize {
                 if is_right {
@@ -949,27 +1093,31 @@ pub(super) fn build_merge_view(
             }
         };
         if let Some((idx, is_right)) = found {
+            nav_guard.set(true);
             if is_right {
                 // right_chunks: A = middle, B = right
                 let chunk = &rch[idx];
                 scroll_to_line(mtv, mb, chunk.start_a, ms);
                 scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
-                place_cursor_at_line(mb, chunk.start_a);
-                place_cursor_at_line(rb, chunk.start_b);
-                // Left pane: no corresponding line — just scroll to middle line
-                scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
+                // Only place cursor in active pane; scroll sync handles left
+                if active == rtv {
+                    place_cursor_at_line(rb, chunk.start_b);
+                } else {
+                    place_cursor_at_line(mb, chunk.start_a);
+                }
             } else {
                 // left_chunks: A = left, B = middle
                 let chunk = &lch[idx];
                 scroll_to_line(mtv, mb, chunk.start_b, ms);
                 scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
-                place_cursor_at_line(mb, chunk.start_b);
-                place_cursor_at_line(lb, chunk.start_a);
-                // Right pane: no corresponding line — just scroll to middle line
-                scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
+                // Only place cursor in active pane; scroll sync handles right
+                if active == ltv {
+                    place_cursor_at_line(lb, chunk.start_a);
+                } else {
+                    place_cursor_at_line(mb, chunk.start_b);
+                }
             }
-            // Set current_chunk AFTER placing cursors, because cursor_position_notify
-            // handlers may overwrite it (e.g. for Insert chunks with zero-length ranges).
+            nav_guard.set(false);
             cur.set(Some((idx, is_right)));
             lf.queue_draw();
             mf.queue_draw();
@@ -1072,11 +1220,13 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pb = prev_btn.clone();
         let nb = next_btn.clone();
+        let ng = navigating.clone();
         prev_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
+                &ng,
                 -1,
                 &ltv,
                 &lb,
@@ -1134,11 +1284,13 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pb = prev_btn.clone();
         let nb = next_btn.clone();
+        let ng = navigating.clone();
         next_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
+                &ng,
                 1,
                 &ltv,
                 &lb,
@@ -1413,17 +1565,14 @@ pub(super) fn build_merge_view(
         right_chunk_map.add_controller(gesture);
     }
 
-    // Redraw chunk maps on scroll
-    {
+    // Redraw chunk maps on any scroll change
+    for scroll in [&left_pane.scroll, &middle_pane.scroll, &right_pane.scroll] {
         let lcm = left_chunk_map.clone();
         let rcm = right_chunk_map.clone();
-        middle_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lcm.queue_draw();
-                rcm.queue_draw();
-            });
+        scroll.vadjustment().connect_value_changed(move |_| {
+            lcm.queue_draw();
+            rcm.queue_draw();
+        });
     }
 
     // Re-diff on any buffer change, and update all visuals when diff completes
@@ -1683,13 +1832,57 @@ pub(super) fn build_merge_view(
             let rf = right_pane.filler_overlay.clone();
             let lg = left_gutter.clone();
             let rg = right_gutter.clone();
+            let ng = navigating.clone();
             buf.connect_cursor_position_notify(move |_| {
+                if ng.get() {
+                    return;
+                }
                 if av.borrow().clone() != my_tv {
                     return;
                 }
                 let chunks = if is_right { rch.borrow() } else { lch.borrow() };
                 let cursor_line = cursor_line_from_view(&my_tv);
-                let at = diff_state::chunk_at_cursor(&chunks, cursor_line, side);
+                let at = diff_state::chunk_at_cursor(&chunks, cursor_line, side).or_else(|| {
+                    // Fallback for conflict regions: cursor may be on a
+                    // zero-length chunk or an equal line absorbed into a
+                    // conflict band.  Use merged_gutter_chunks to find the
+                    // conflict band, then pick its first non-equal chunk.
+                    let other = if is_right {
+                        &*lch.borrow()
+                    } else {
+                        &*rch.borrow()
+                    };
+                    let merged = merged_gutter_chunks(&chunks, other, side);
+                    for (mc, is_cfl) in &merged {
+                        if !is_cfl {
+                            continue;
+                        }
+                        let (band_s, band_e) = if side == Side::A {
+                            (mc.start_a, mc.end_a)
+                        } else {
+                            (mc.start_b, mc.end_b)
+                        };
+                        if cursor_line >= band_s && cursor_line < band_e {
+                            // Find the first non-equal chunk inside this band.
+                            return chunks.iter().enumerate().find_map(|(i, c)| {
+                                if c.tag == DiffTag::Equal {
+                                    return None;
+                                }
+                                let (cs, ce) = if side == Side::A {
+                                    (c.start_a, c.end_a)
+                                } else {
+                                    (c.start_b, c.end_b)
+                                };
+                                if cs >= band_s && ce <= band_e {
+                                    Some(i)
+                                } else {
+                                    None
+                                }
+                            });
+                        }
+                    }
+                    None
+                });
                 let prev_at = cur.get();
                 let new_at = at.map(|idx| (idx, is_right));
                 cur.set(new_at);
@@ -1754,7 +1947,11 @@ pub(super) fn build_merge_view(
             let rf = right_pane.filler_overlay.clone();
             let lg = left_gutter.clone();
             let rg = right_gutter.clone();
+            let ng = navigating.clone();
             middle_buf.connect_cursor_position_notify(move |_| {
+                if ng.get() {
+                    return;
+                }
                 if av.borrow().clone() != mtv {
                     return;
                 }
@@ -1765,7 +1962,46 @@ pub(super) fn build_merge_view(
                 let right_at = diff_state::chunk_at_cursor(&rch.borrow(), cursor_line, Side::A);
                 let at = left_at
                     .map(|idx| (idx, false))
-                    .or_else(|| right_at.map(|idx| (idx, true)));
+                    .or_else(|| right_at.map(|idx| (idx, true)))
+                    .or_else(|| {
+                        // Fallback: cursor may be on an equal/zero-length line
+                        // inside a conflict region on the middle pane.
+                        let regions = middle_conflict_regions(&lch.borrow(), &rch.borrow());
+                        if regions
+                            .iter()
+                            .any(|&(s, e)| cursor_line >= s && cursor_line < e)
+                        {
+                            // Pick the first left conflict chunk whose middle
+                            // projection includes or adjoins cursor_line.
+                            lch.borrow()
+                                .iter()
+                                .enumerate()
+                                .find_map(|(i, c)| {
+                                    if c.tag == DiffTag::Equal {
+                                        return None;
+                                    }
+                                    if c.start_b <= cursor_line && cursor_line <= c.end_b {
+                                        Some((i, false))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .or_else(|| {
+                                    rch.borrow().iter().enumerate().find_map(|(i, c)| {
+                                        if c.tag == DiffTag::Equal {
+                                            return None;
+                                        }
+                                        if c.start_a <= cursor_line && cursor_line <= c.end_a {
+                                            Some((i, true))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                        } else {
+                            None
+                        }
+                    });
                 let prev_at = cur.get();
                 cur.set(at);
                 update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), at);
@@ -1842,11 +2078,13 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pb = prev_btn.clone();
         let nb = next_btn.clone();
+        let ng = navigating.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
+                &ng,
                 -1,
                 &ltv,
                 &lb,
@@ -1899,11 +2137,13 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pb = prev_btn.clone();
         let nb = next_btn.clone();
+        let ng = navigating.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
+                &ng,
                 1,
                 &ltv,
                 &lb,
@@ -2273,6 +2513,7 @@ pub(super) fn build_merge_view(
         left_buf,
         middle_buf,
         right_buf,
+        middle_view: middle_pane.text_view,
         middle_save: middle_pane.save_btn,
         middle_tab_path: middle_pane.tab_path,
         action_group,
@@ -2408,6 +2649,7 @@ pub(super) fn build_merge_window(
         merge_watcher.alive.set(false);
     });
 
+    mv.middle_view.grab_focus();
     window.present();
 }
 

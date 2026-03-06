@@ -90,7 +90,7 @@ pub fn draw_gutter(
 ///
 /// Returns a sorted, non-overlapping list of `(start, end)` half-open line
 /// ranges on the middle pane where left and right changes overlap.
-fn middle_conflict_regions(
+pub fn middle_conflict_regions(
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
 ) -> Vec<(usize, usize)> {

@@ -504,6 +504,9 @@ pub fn apply_side_conflict_bg_tags(
 }
 
 /// Draw chunk stroke lines via Cairo overlay (fills are handled by `paragraph_background` tags).
+///
+/// When `is_conflict` is `Some`, chunks where `is_conflict[i]` is true are
+/// skipped — the conflict drawing functions handle those separately.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_chunk_backgrounds(
     cr: &gtk4::cairo::Context,
@@ -513,6 +516,7 @@ pub fn draw_chunk_backgrounds(
     chunks: &[DiffChunk],
     side: Side,
     current_chunk_idx: Option<usize>,
+    is_conflict: Option<&[bool]>,
 ) {
     let scroll_y = scroll.vadjustment().value();
     let view_h = scroll.vadjustment().page_size();
@@ -530,6 +534,11 @@ pub fn draw_chunk_backgrounds(
 
         // Skip empty ranges (e.g. pure insert on the other side)
         if start == end {
+            continue;
+        }
+
+        // Skip conflict chunks — drawn by conflict functions instead.
+        if is_conflict.is_some_and(|c| c[i]) {
             continue;
         }
 
@@ -599,7 +608,50 @@ pub fn draw_chunk_backgrounds(
     }
 }
 
+/// Compute per-chunk conflict flags: `result[i]` is true when chunk `i` in
+/// `my_chunks` overlaps with any non-Equal chunk from `other_chunks` on the
+/// middle pane.
+///
+/// `my_mid` selects which side of `my_chunks` is the middle pane;
+/// `other_mid` selects which side of `other_chunks` is the middle pane.
+pub fn conflict_flags(
+    my_chunks: &[DiffChunk],
+    my_mid: Side,
+    other_chunks: &[DiffChunk],
+    other_mid: Side,
+) -> Vec<bool> {
+    my_chunks
+        .iter()
+        .map(|mc| {
+            if mc.tag == DiffTag::Equal {
+                return false;
+            }
+            let (ms, me) = match my_mid {
+                Side::A => (mc.start_a, mc.end_a),
+                Side::B => (mc.start_b, mc.end_b),
+            };
+            other_chunks.iter().any(|oc| {
+                if oc.tag == DiffTag::Equal {
+                    return false;
+                }
+                let (os, oe) = match other_mid {
+                    Side::A => (oc.start_a, oc.end_a),
+                    Side::B => (oc.start_b, oc.end_b),
+                };
+                chunks_overlap(ms, me, os, oe)
+            })
+        })
+        .collect()
+}
+
 /// Draw conflict background overlays on the middle pane of a 3-way merge.
+///
+/// Uses merged conflict regions so overlapping left/right pairs produce a
+/// single set of borders instead of duplicates.
+///
+/// `current_chunk` is `(chunk_index, is_right)` — the currently selected chunk.
+/// When a conflict involves the current chunk, it gets bold borders.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_conflict_backgrounds(
     cr: &gtk4::cairo::Context,
     width: f64,
@@ -607,63 +659,74 @@ pub fn draw_conflict_backgrounds(
     scroll: &ScrolledWindow,
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
+    current_chunk: Option<(usize, bool)>,
 ) {
     let scroll_y = scroll.vadjustment().value();
     let view_h = scroll.vadjustment().page_size();
     let buf = tv.buffer();
 
-    for lc in left_chunks {
-        if lc.tag == DiffTag::Equal {
+    let regions = middle_conflict_regions(left_chunks, right_chunks);
+
+    for &(tag_start, tag_end) in &regions {
+        if tag_start == tag_end {
             continue;
         }
-        let l_start = lc.start_b;
-        let l_end = lc.end_b;
 
-        for rc in right_chunks {
-            if rc.tag == DiffTag::Equal {
-                continue;
-            }
-            let r_start = rc.start_a;
-            let r_end = rc.end_a;
+        let y_top_buf = if let Some(iter) = buf.iter_at_line(tag_start as i32) {
+            tv.line_yrange(&iter).0 as f64
+        } else {
+            let iter = buf.end_iter();
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        };
 
-            if !chunks_overlap(l_start, l_end, r_start, r_end) {
-                continue;
-            }
+        let last = tag_end - 1;
+        let y_bot_buf = if let Some(iter) = buf.iter_at_line(last as i32) {
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        } else {
+            let iter = buf.end_iter();
+            let (y, h) = tv.line_yrange(&iter);
+            (y + h) as f64
+        };
 
-            let tag_start = l_start.min(r_start);
-            let tag_end = l_end.max(r_end);
-            if tag_start == tag_end {
-                continue;
-            }
+        let y_top = y_top_buf - scroll_y;
+        let y_bot = y_bot_buf - scroll_y;
 
-            let y_top_buf = if let Some(iter) = buf.iter_at_line(tag_start as i32) {
-                tv.line_yrange(&iter).0 as f64
+        if y_bot < 0.0 || y_top > view_h {
+            continue;
+        }
+
+        // A conflict region is "current" if the current chunk (from either
+        // side) has its middle-pane projection overlapping this region.
+        let is_current = current_chunk.is_some_and(|(idx, is_right)| {
+            if is_right {
+                let c = &right_chunks[idx];
+                chunks_overlap(c.start_a, c.end_a, tag_start, tag_end)
             } else {
-                let iter = buf.end_iter();
-                let (y, h) = tv.line_yrange(&iter);
-                (y + h) as f64
-            };
-
-            let last = tag_end - 1;
-            let y_bot_buf = if let Some(iter) = buf.iter_at_line(last as i32) {
-                let (y, h) = tv.line_yrange(&iter);
-                (y + h) as f64
-            } else {
-                let iter = buf.end_iter();
-                let (y, h) = tv.line_yrange(&iter);
-                (y + h) as f64
-            };
-
-            let y_top = y_top_buf - scroll_y;
-            let y_bot = y_bot_buf - scroll_y;
-
-            if y_bot < 0.0 || y_top > view_h {
-                continue;
+                let c = &left_chunks[idx];
+                chunks_overlap(c.start_b, c.end_b, tag_start, tag_end)
             }
+        });
 
-            // Stroke only — fill is handled by paragraph_background tags
-            let cs = stroke_conflict();
-            cr.set_source_rgba(cs.0, cs.1, cs.2, cs.3);
+        let cs = stroke_conflict();
+        if is_current {
+            let bold = if is_dark_scheme() {
+                (
+                    (cs.0 * 0.5 + 0.5).min(1.0),
+                    (cs.1 * 0.5 + 0.5).min(1.0),
+                    (cs.2 * 0.5 + 0.5).min(1.0),
+                )
+            } else {
+                (cs.0 * 0.5, cs.1 * 0.5, cs.2 * 0.5)
+            };
+            cr.set_source_rgba(bold.0, bold.1, bold.2, 1.0);
+            cr.rectangle(0.0, y_top - 2.0, width, 3.0);
+            let _ = cr.fill();
+            cr.rectangle(0.0, y_bot - 1.0, width, 3.0);
+            let _ = cr.fill();
+        } else {
+            cr.set_source_rgba(cs.0, cs.1, cs.2, 1.0);
             cr.rectangle(0.0, y_top, width, 1.0);
             let _ = cr.fill();
             cr.rectangle(0.0, y_bot - 1.0, width, 1.0);
@@ -676,6 +739,10 @@ pub fn draw_conflict_backgrounds(
 ///
 /// Uses `merged_gutter_chunks` so strokes match the fills from
 /// `apply_side_conflict_bg_tags`.
+///
+/// `current_chunk` is `(chunk_index, is_right)`. On the left pane (side=A)
+/// the current chunk uses `is_right=false`; on the right pane (side=B) `is_right=true`.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_side_conflict_strokes(
     cr: &gtk4::cairo::Context,
     width: f64,
@@ -684,6 +751,7 @@ pub fn draw_side_conflict_strokes(
     left_chunks: &[DiffChunk],
     right_chunks: &[DiffChunk],
     side: Side,
+    current_chunk: Option<(usize, bool)>,
 ) {
     let scroll_y = scroll.vadjustment().value();
     let view_h = scroll.vadjustment().page_size();
@@ -709,6 +777,25 @@ pub fn draw_side_conflict_strokes(
         if start >= end {
             continue;
         }
+
+        // Check if the current chunk is involved in this conflict band.
+        // Use middle-pane overlap: project both the current chunk and this
+        // band onto the middle pane and check for overlap.
+        let (band_mid_s, band_mid_e) = match side {
+            Side::A => (chunk.start_b, chunk.end_b),
+            Side::B => (chunk.start_a, chunk.end_a),
+        };
+        let is_current = current_chunk.is_some_and(|(idx, is_right)| {
+            let (cur_mid_s, cur_mid_e) = if is_right {
+                let c = &right_chunks[idx];
+                (c.start_a, c.end_a) // right_chunks: A=middle
+            } else {
+                let c = &left_chunks[idx];
+                (c.start_b, c.end_b) // left_chunks: B=middle
+            };
+            chunks_overlap(cur_mid_s, cur_mid_e, band_mid_s, band_mid_e)
+        });
+
         let y_top_buf = if let Some(iter) = buf.iter_at_line(start as i32) {
             tv.line_yrange(&iter).0 as f64
         } else {
@@ -729,11 +816,28 @@ pub fn draw_side_conflict_strokes(
         let y_bot = y_bot_buf - scroll_y;
         if y_bot >= 0.0 && y_top <= view_h {
             let cs = stroke_conflict();
-            cr.set_source_rgba(cs.0, cs.1, cs.2, cs.3);
-            cr.rectangle(0.0, y_top, width, 1.0);
-            let _ = cr.fill();
-            cr.rectangle(0.0, y_bot - 1.0, width, 1.0);
-            let _ = cr.fill();
+            if is_current {
+                let bold = if is_dark_scheme() {
+                    (
+                        (cs.0 * 0.5 + 0.5).min(1.0),
+                        (cs.1 * 0.5 + 0.5).min(1.0),
+                        (cs.2 * 0.5 + 0.5).min(1.0),
+                    )
+                } else {
+                    (cs.0 * 0.5, cs.1 * 0.5, cs.2 * 0.5)
+                };
+                cr.set_source_rgba(bold.0, bold.1, bold.2, 1.0);
+                cr.rectangle(0.0, y_top - 2.0, width, 3.0);
+                let _ = cr.fill();
+                cr.rectangle(0.0, y_bot - 1.0, width, 3.0);
+                let _ = cr.fill();
+            } else {
+                cr.set_source_rgba(cs.0, cs.1, cs.2, 1.0);
+                cr.rectangle(0.0, y_top, width, 1.0);
+                let _ = cr.fill();
+                cr.rectangle(0.0, y_bot - 1.0, width, 1.0);
+                let _ = cr.fill();
+            }
         }
     }
 }

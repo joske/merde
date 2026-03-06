@@ -637,6 +637,7 @@ pub fn build_new_comparison_tab(
                                     let page_num =
                                         nb4.append_page(&mv.widget, Some(&tab_label_box));
                                     nb4.set_current_page(Some(page_num));
+                                    mv.middle_view.grab_focus();
 
                                     // Register in open_tabs so window-close checks unsaved
                                     let tab_id = NEXT_TAB_ID

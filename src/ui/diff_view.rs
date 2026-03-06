@@ -272,7 +272,7 @@ pub(super) fn build_diff_view(
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
-                draw_chunk_backgrounds(cr, w, &ltv, &ls, &ch.borrow(), Side::A, cur.get());
+                draw_chunk_backgrounds(cr, w, &ltv, &ls, &ch.borrow(), Side::A, cur.get(), None);
                 draw_fillers(cr, w, &ltv, &ls, &ch.borrow(), true);
             });
     }
@@ -285,7 +285,7 @@ pub(super) fn build_diff_view(
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
-                draw_chunk_backgrounds(cr, w, &rtv, &rs, &ch.borrow(), Side::B, cur.get());
+                draw_chunk_backgrounds(cr, w, &rtv, &rs, &ch.borrow(), Side::B, cur.get(), None);
                 draw_fillers(cr, w, &rtv, &rs, &ch.borrow(), false);
             });
     }
