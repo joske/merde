@@ -15,7 +15,7 @@ struct Cli {
     paths: Vec<PathBuf>,
 
     /// Custom labels for panes (one per pane)
-    #[arg(short = 'L', long = "label")]
+    #[arg(short = 'L', long = "label", value_name = "LABEL")]
     labels: Vec<String>,
 }
 
