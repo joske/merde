@@ -104,22 +104,23 @@ pub fn build_find_bar(
             let current_tv = av.borrow().clone();
             let current_buf = current_tv.buffer();
 
-            // Try to find in the current buffer first
+            // Try to find in the current buffer first (no wrap)
             let cursor = current_buf.iter_at_mark(&current_buf.get_insert());
-            if let Some((start, end)) = find_next_match(&current_buf, needle, &cursor, forward) {
+            if let Some((start, end)) = find_next_match_no_wrap(needle, &cursor, forward, true) {
                 current_buf.select_range(&start, &end);
                 let scroll = scroll_for_view(&current_tv, &fs);
                 scroll_to_line(&current_tv, &current_buf, start.line() as usize, &scroll);
                 return;
             }
 
-            // Not found in current pane — cycle through other panes
+            // Not found ahead/behind in current pane — cycle through other
+            // panes, then wrap back to the current pane from the start/end.
             let current_idx = all
                 .iter()
                 .position(|(tv, _)| *tv == current_tv)
                 .unwrap_or(0);
             let n = all.len();
-            for offset in 1..n {
+            for offset in 1..=n {
                 let idx = if forward {
                     (current_idx + offset) % n
                 } else {
@@ -131,7 +132,7 @@ pub fn build_find_bar(
                 } else {
                     buf.end_iter()
                 };
-                if let Some((start, end)) = find_next_match(buf, needle, &from, forward) {
+                if let Some((start, end)) = find_next_match_no_wrap(needle, &from, forward, false) {
                     buf.select_range(&start, &end);
                     *av.borrow_mut() = tv.clone();
                     tv.grab_focus();

@@ -29,34 +29,25 @@ pub fn highlight_search_matches(buf: &TextBuffer, needle: &str) -> usize {
     count
 }
 
-/// Find the next (or previous) match starting from `from`. Returns (start, end) iters.
-pub fn find_next_match(
-    buf: &TextBuffer,
+/// Find the next (or previous) match starting from `from`, without wrapping.
+/// When `skip_current` is true, advances one character forward first to avoid
+/// re-finding the match at the cursor.
+pub fn find_next_match_no_wrap(
     needle: &str,
     from: &gtk4::TextIter,
     forward: bool,
+    skip_current: bool,
 ) -> Option<(gtk4::TextIter, gtk4::TextIter)> {
     if needle.is_empty() {
         return None;
     }
     if forward {
-        // Start one character ahead so we don't re-find the current match
         let mut start = *from;
-        start.forward_char();
-        let result = start.forward_search(needle, TextSearchFlags::CASE_INSENSITIVE, None);
-        if result.is_some() {
-            return result;
+        if skip_current {
+            start.forward_char();
         }
-        // Wrap around
-        buf.start_iter()
-            .forward_search(needle, TextSearchFlags::CASE_INSENSITIVE, None)
+        start.forward_search(needle, TextSearchFlags::CASE_INSENSITIVE, None)
     } else {
-        let result = from.backward_search(needle, TextSearchFlags::CASE_INSENSITIVE, None);
-        if result.is_some() {
-            return result;
-        }
-        // Wrap around
-        buf.end_iter()
-            .backward_search(needle, TextSearchFlags::CASE_INSENSITIVE, None)
+        from.backward_search(needle, TextSearchFlags::CASE_INSENSITIVE, None)
     }
 }
