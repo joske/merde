@@ -188,4 +188,10 @@ pub(super) fn build_file_window(
     });
 
     window.present();
+
+    // Focus the left text view so keyboard shortcuts work immediately
+    let ltv = dv.left_text_view.clone();
+    gtk4::glib::idle_add_local_once(move || {
+        ltv.grab_focus();
+    });
 }
