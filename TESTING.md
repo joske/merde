@@ -101,7 +101,7 @@
 - [ ] Alt+Right on a diff chunk: copies left chunk content to right (no file copy dialog)
 - [ ] Alt+Left on a diff chunk: copies right chunk content to left (no file copy dialog)
 - [ ] Alt+Left/Right with no current chunk: nothing happens
-- [ ] In dir window file tab: Alt+Left/Right copies chunks, does NOT trigger dir file copy
+- [ ] In file diff tab opened from dir window: Alt+Left/Right copies chunks, does NOT trigger dir file copy
 
 ### Edge Cases
 - [ ] Identical files: "Files are identical" info bar; edit one side -> bar disappears; undo -> reappears
