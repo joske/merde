@@ -57,7 +57,7 @@
 
 ### Scroll Sync
 - [ ] Horizontal scroll synced between panes
-- [ ] Vertical scroll independent per pane
+- [ ] Vertical scroll synced by chunk between panes
 
 ### Find / Replace
 - [ ] Ctrl+F: opens find bar; Ctrl+H: opens find + replace
@@ -214,7 +214,7 @@
 
 ### Scroll Sync
 - [ ] Horizontal sync across all three panes
-- [ ] Vertical independent per pane
+- [ ] Vertical scroll synced by chunk across all three panes
 
 ### Find / Replace
 - [ ] Ctrl+F/H: find bar highlights matches across all three buffers
