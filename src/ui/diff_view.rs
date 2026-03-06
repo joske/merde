@@ -1067,31 +1067,17 @@ pub(super) fn open_file_diff(
     });
 
     // Tab label
-    let file_name = Path::new(rel_path).file_name().map_or_else(
-        || rel_path.to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let left_dir_name = Path::new(left_dir)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let right_dir_name = Path::new(right_dir)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let file_name = display_name(Path::new(rel_path));
+    let left_dir_name = display_name(Path::new(left_dir));
+    let right_dir_name = display_name(Path::new(right_dir));
     let tab_title = format!("[{left_dir_name}] {file_name} — [{right_dir_name}] {file_name}");
 
-    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
-    let label = Label::new(Some(&tab_title));
-    let close_btn = Button::from_icon_name("window-close-symbolic");
-    close_btn.set_has_frame(false);
-    tab_label_box.append(&label);
-    tab_label_box.append(&close_btn);
+    let (tab_label_box, close_btn) = make_closeable_tab_label(&tab_title);
 
     // Update tab label when panes are swapped (FileTab paths are swapped
     // centrally in build_diff_view's swap handler)
     {
-        let lbl = label.clone();
+        let lbl = tab_label_box.first_child().and_downcast::<Label>().unwrap();
         let ln = left_dir_name;
         let rn = right_dir_name;
         let fn_ = file_name;
@@ -1152,14 +1138,8 @@ pub(super) fn open_file_diff_paths(
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let left_name = left_path.file_name().map_or_else(
-        || left_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let right_name = right_path.file_name().map_or_else(
-        || right_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
+    let left_name = display_name(&left_path);
+    let right_name = display_name(&right_path);
     let tab_title = format!("{left_name} — {right_name}");
 
     open_tabs.borrow_mut().push(FileTab::Diff {
@@ -1178,17 +1158,13 @@ pub(super) fn open_file_diff_paths(
         },
     });
 
-    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
-    let label = Label::new(Some(&tab_title));
-    let close_btn = Button::from_icon_name("window-close-symbolic");
-    close_btn.set_has_frame(false);
-    tab_label_box.append(&label);
-    tab_label_box.append(&close_btn);
+    let (tab_label_box, close_btn) = make_closeable_tab_label(&tab_title);
+    let label = tab_label_box.first_child().and_downcast::<Label>().unwrap();
 
     // Update tab label when panes are swapped (FileTab paths are swapped
     // centrally in build_diff_view's swap handler)
     {
-        let lbl = label.clone();
+        let lbl = label;
         let ln = left_name;
         let rn = right_name;
         let swapped = Rc::new(Cell::new(false));
@@ -1262,12 +1238,7 @@ pub(super) fn open_blank_diff(
         },
     });
 
-    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
-    let label = Label::new(Some("Blank Comparison"));
-    let close_btn = Button::from_icon_name("window-close-symbolic");
-    close_btn.set_has_frame(false);
-    tab_label_box.append(&label);
-    tab_label_box.append(&close_btn);
+    let (tab_label_box, close_btn) = make_closeable_tab_label("Blank Comparison");
 
     let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
     notebook.set_current_page(Some(page_num));

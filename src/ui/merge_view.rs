@@ -85,190 +85,7 @@ fn refresh_merge_diffs(
     });
 }
 
-/// 3-way scroll sync using chunk-based mapping (matching meld's influence-through-middle).
-///
-/// `left_chunks`: left(A) vs middle(B).  `right_chunks`: middle(A) vs right(B).
-#[allow(clippy::too_many_arguments)]
-fn setup_scroll_sync_3way(
-    left_scroll: &ScrolledWindow,
-    middle_scroll: &ScrolledWindow,
-    right_scroll: &ScrolledWindow,
-    left_tv: &TextView,
-    middle_tv: &TextView,
-    right_tv: &TextView,
-    left_buf: &TextBuffer,
-    middle_buf: &TextBuffer,
-    right_buf: &TextBuffer,
-    left_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
-    right_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
-    left_gutter: &DrawingArea,
-    right_gutter: &DrawingArea,
-) {
-    let syncing = Rc::new(Cell::new(false));
-
-    // Vertical: Left → Middle (left_chunks), then Middle → Right (right_chunks)
-    {
-        let ms = middle_scroll.clone();
-        let rs = right_scroll.clone();
-        let ltv = left_tv.clone();
-        let mtv = middle_tv.clone();
-        let rtv = right_tv.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        let s = syncing.clone();
-        left_scroll.vadjustment().connect_value_changed(move |adj| {
-            lg.queue_draw();
-            rg.queue_draw();
-            if !s.get() {
-                s.set(true);
-                sync_vscroll(adj, &ltv, &ms.vadjustment(), &mtv, &mb, &lch.borrow(), true);
-                sync_vscroll(
-                    &ms.vadjustment(),
-                    &mtv,
-                    &rs.vadjustment(),
-                    &rtv,
-                    &rb,
-                    &rch.borrow(),
-                    true,
-                );
-                s.set(false);
-            }
-        });
-    }
-
-    // Vertical: Middle → Left (left_chunks) + Right (right_chunks)
-    {
-        let ls = left_scroll.clone();
-        let rs = right_scroll.clone();
-        let ltv = left_tv.clone();
-        let mtv = middle_tv.clone();
-        let rtv = right_tv.clone();
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        let s = syncing.clone();
-        middle_scroll
-            .vadjustment()
-            .connect_value_changed(move |adj| {
-                lg.queue_draw();
-                rg.queue_draw();
-                if !s.get() {
-                    s.set(true);
-                    sync_vscroll(
-                        adj,
-                        &mtv,
-                        &ls.vadjustment(),
-                        &ltv,
-                        &lb,
-                        &lch.borrow(),
-                        false,
-                    );
-                    sync_vscroll(adj, &mtv, &rs.vadjustment(), &rtv, &rb, &rch.borrow(), true);
-                    s.set(false);
-                }
-            });
-    }
-
-    // Vertical: Right → Middle (right_chunks), then Middle → Left (left_chunks)
-    {
-        let ls = left_scroll.clone();
-        let ms = middle_scroll.clone();
-        let ltv = left_tv.clone();
-        let mtv = middle_tv.clone();
-        let rtv = right_tv.clone();
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        let s = syncing.clone();
-        right_scroll
-            .vadjustment()
-            .connect_value_changed(move |adj| {
-                lg.queue_draw();
-                rg.queue_draw();
-                if !s.get() {
-                    s.set(true);
-                    sync_vscroll(
-                        adj,
-                        &rtv,
-                        &ms.vadjustment(),
-                        &mtv,
-                        &mb,
-                        &rch.borrow(),
-                        false,
-                    );
-                    sync_vscroll(
-                        &ms.vadjustment(),
-                        &mtv,
-                        &ls.vadjustment(),
-                        &ltv,
-                        &lb,
-                        &lch.borrow(),
-                        false,
-                    );
-                    s.set(false);
-                }
-            });
-    }
-
-    // Horizontal: Left → Middle, Right
-    {
-        let ms = middle_scroll.clone();
-        let rs = right_scroll.clone();
-        let s = syncing.clone();
-        left_scroll.hadjustment().connect_value_changed(move |adj| {
-            if !s.get() {
-                s.set(true);
-                ms.hadjustment().set_value(adj.value());
-                rs.hadjustment().set_value(adj.value());
-                s.set(false);
-            }
-        });
-    }
-
-    // Horizontal: Middle → Left, Right
-    {
-        let ls = left_scroll.clone();
-        let rs = right_scroll.clone();
-        let s = syncing.clone();
-        middle_scroll
-            .hadjustment()
-            .connect_value_changed(move |adj| {
-                if !s.get() {
-                    s.set(true);
-                    ls.hadjustment().set_value(adj.value());
-                    rs.hadjustment().set_value(adj.value());
-                    s.set(false);
-                }
-            });
-    }
-
-    // Horizontal: Right → Left, Middle
-    {
-        let ls = left_scroll.clone();
-        let ms = middle_scroll.clone();
-        let s = syncing.clone();
-        right_scroll
-            .hadjustment()
-            .connect_value_changed(move |adj| {
-                if !s.get() {
-                    s.set(true);
-                    ls.hadjustment().set_value(adj.value());
-                    ms.hadjustment().set_value(adj.value());
-                    s.set(false);
-                }
-            });
-    }
-}
+// setup_scroll_sync_3way lives in scroll_sync.rs alongside setup_scroll_sync.
 
 /// Collect non-Equal chunks from both diffs, sorted by middle-file line position.
 /// Returns (`chunk_index`, `is_right_diff`) pairs.
@@ -2342,19 +2159,12 @@ pub(super) fn build_merge_window(
     }
 
     // Window title / tab title
-    let left_name = left_path.file_name().map_or_else(
-        || left_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
+    let title = format!(
+        "{} — {} — {}",
+        display_name(&left_path),
+        display_name(&middle_path),
+        display_name(&right_path),
     );
-    let middle_name = middle_path.file_name().map_or_else(
-        || middle_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let right_name = right_path.file_name().map_or_else(
-        || right_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let title = format!("{left_name} — {middle_name} — {right_name}");
 
     // ── Window via shared helper ─────────────────────────────────────
     let AppWindow {
@@ -2389,6 +2199,60 @@ pub(super) fn build_merge_window(
 
     mv.middle_view.grab_focus();
     window.present();
+}
+
+/// Open a 3-way merge as a tab in the given notebook.
+pub(super) fn open_merge_comparison_tab(
+    notebook: &Notebook,
+    left_path: PathBuf,
+    middle_path: PathBuf,
+    right_path: PathBuf,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    let mv = build_merge_view(&left_path, &middle_path, &right_path, &[], settings);
+    mv.widget
+        .insert_action_group("diff", Some(&mv.action_group));
+
+    let merge_title = format!(
+        "{} — {} — {}",
+        display_name(&left_path),
+        display_name(&middle_path),
+        display_name(&right_path),
+    );
+
+    let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    open_tabs.borrow_mut().push(FileTab::Merge {
+        id: tab_id,
+        rel_path: merge_title.clone(),
+        widget: mv.widget.clone(),
+        middle: PaneInfo {
+            path: mv.middle_tab_path,
+            buf: mv.middle_buf.clone(),
+            save: mv.middle_save,
+        },
+    });
+
+    let (tab_label_box, close_btn) = make_closeable_tab_label(&merge_title);
+    let page_num = notebook.append_page(&mv.widget, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+    mv.middle_view.grab_focus();
+
+    {
+        let nb = notebook.clone();
+        let w = mv.widget;
+        let tabs = open_tabs.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                if let Some(win) = find_window(&nb) {
+                    close_notebook_tab(&win, &nb, &tabs, n);
+                } else {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
+                }
+            }
+        });
+    }
 }
 
 // Tests for merge_change_indices and find_conflict_markers are in merge_state.rs

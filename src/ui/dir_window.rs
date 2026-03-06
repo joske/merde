@@ -1370,6 +1370,43 @@ pub(super) fn build_dir_tab(
     (dir_tab, dir_watcher, left_view, title)
 }
 
+/// Open a directory comparison as a tab in the given notebook.
+pub(super) fn open_dir_comparison_tab(
+    notebook: &Notebook,
+    left_dir: PathBuf,
+    right_dir: PathBuf,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    let (dir_widget, dir_watcher, left_view, dir_title) =
+        build_dir_tab(left_dir, right_dir, &[], Rc::clone(settings), notebook, open_tabs);
+
+    let (tab_label_box, close_btn) = make_closeable_tab_label(&dir_title);
+    let page_num = notebook.append_page(&dir_widget, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+    left_view.grab_focus();
+
+    // Stop watcher when tab is removed
+    {
+        let dw = dir_widget.clone();
+        let wa = dir_watcher.alive.clone();
+        notebook.connect_page_removed(move |_, child, _| {
+            if *child == dw {
+                wa.set(false);
+            }
+        });
+    }
+    {
+        let nb = notebook.clone();
+        let dw = dir_widget;
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&dw) {
+                nb.remove_page(Some(n));
+            }
+        });
+    }
+}
+
 // ─── Directory comparison window ───────────────────────────────────────────
 
 pub(super) fn build_dir_window(

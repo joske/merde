@@ -6,6 +6,24 @@ pub fn is_blank_path(p: &Path) -> bool {
     p.as_os_str().is_empty()
 }
 
+/// Extract the file/dir name from a path for display, falling back to the full path.
+pub fn display_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// Create a notebook tab label with a close button.
+pub fn make_closeable_tab_label(title: &str) -> (GtkBox, Button) {
+    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+    tab_label_box.append(&Label::new(Some(title)));
+    let close_btn = Button::from_icon_name("window-close-symbolic");
+    close_btn.set_has_frame(false);
+    tab_label_box.append(&close_btn);
+    (tab_label_box, close_btn)
+}
+
 fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|&b| b == 0)
 }
