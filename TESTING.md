@@ -162,7 +162,7 @@
 - [ ] Ctrl+W on Directory tab: closes entire window
 - [ ] Ctrl+W on file tab: closes that tab
 - [ ] Same file not opened twice: switches to existing tab
-- [ ] Ctrl+1..9: switches to tab by index
+- [ ] Alt+1..9: switches to tab by index
 - [ ] Ctrl+N: opens New Comparison tab
 - [ ] New Comparison tab: "Compare Files" and "3-Way Merge" buttons with file choosers
 - [ ] New Comparison → Compare Files: opens diff tab, removes new-comparison tab
@@ -270,7 +270,7 @@
 - [ ] Ctrl+W on file tab: closes tab with unsaved check
 - [ ] Window close: checks all tabs for unsaved changes
 - [ ] Temp directory cleaned up on window destroy
-- [ ] Ctrl+1..9: switches to tab by index
+- [ ] Alt+1..9: switches to tab by index
 - [ ] Ctrl+N: opens New Comparison tab
 
 ### Security
@@ -325,7 +325,7 @@
 | Ctrl+Shift+O | Open focused file externally |
 | Ctrl+R / F5 | Refresh (reload from disk) |
 | Ctrl+N | New Comparison tab (dir/VCS windows) |
-| Ctrl+1..9 | Switch to tab by index (notebook windows) |
+| Alt+1..9 | Switch to tab by index (notebook windows) |
 | Delete | Delete selected (dir only) |
 | Enter | Open selected file / expand-collapse dir (dir/VCS) |
 | Escape | Close find bar / go-to-line / preferences dialog |
