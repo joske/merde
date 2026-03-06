@@ -155,7 +155,7 @@
 - [ ] "Delete": always available
 
 ### Notebook Tabs
-- [ ] Directory tab labeled "Directory"
+- [ ] Directory tab labeled with "dir1 — dir2"
 - [ ] File tabs labeled with dir-relative names
 - [ ] Opening file diff tab: left pane has focus, cursor at line 1
 - [ ] Tab close (X): prompts for unsaved changes
