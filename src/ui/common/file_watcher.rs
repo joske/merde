@@ -3,6 +3,14 @@ use super::*;
 
 pub struct FileWatcher {
     pub alive: Rc<Cell<bool>>,
+    watch_tx: mpsc::Sender<PathBuf>,
+}
+
+impl FileWatcher {
+    /// Add a new path (file or directory) to the set of watched paths.
+    pub fn watch(&self, path: &Path) {
+        let _ = self.watch_tx.send(path.to_path_buf());
+    }
 }
 
 /// Start a file watcher that polls for changes every 500 ms.
@@ -26,6 +34,13 @@ pub fn start_file_watcher(
 
     let alive = Rc::new(Cell::new(true));
     let (fs_tx, fs_rx) = mpsc::channel::<()>();
+    let (watch_tx, watch_rx) = mpsc::channel::<PathBuf>();
+
+    let mode = if recursive {
+        RecursiveMode::Recursive
+    } else {
+        RecursiveMode::NonRecursive
+    };
 
     let watcher = {
         let mut w =
@@ -37,23 +52,22 @@ pub fn start_file_watcher(
                 }
             })
             .expect("Failed to create file watcher");
-        let mode = if recursive {
-            RecursiveMode::Recursive
-        } else {
-            RecursiveMode::NonRecursive
-        };
         for p in paths {
             w.watch(p, mode).ok();
         }
         w
     };
 
+    let watcher = RefCell::new(watcher);
     let alive2 = alive.clone();
     let mut on_tick = on_tick;
     gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
-        let _ = &watcher; // prevent drop; watcher lives until closure is dropped
         if !alive2.get() {
             return gtk4::glib::ControlFlow::Break;
+        }
+        // Process requests to watch new paths (e.g. after Save As).
+        while let Ok(new_path) = watch_rx.try_recv() {
+            watcher.borrow_mut().watch(&new_path, mode).ok();
         }
         let mut fs_dirty = false;
         while fs_rx.try_recv().is_ok() {
@@ -63,5 +77,5 @@ pub fn start_file_watcher(
         gtk4::glib::ControlFlow::Continue
     });
 
-    FileWatcher { alive }
+    FileWatcher { alive, watch_tx }
 }

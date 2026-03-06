@@ -81,6 +81,36 @@ pub(super) fn build_file_window(
         }
     });
 
+    // Track Save As directory changes and tell watcher to monitor new dirs.
+    let watcher_alive = diff_watcher.alive.clone();
+    {
+        let lsp = dv.left_save_path.clone();
+        let rsp = dv.right_save_path.clone();
+        let alive = watcher_alive.clone();
+        let watched_left_dir: Rc<RefCell<PathBuf>> = Rc::new(RefCell::new(
+            left_path.parent().unwrap_or(Path::new("")).to_path_buf(),
+        ));
+        let watched_right_dir: Rc<RefCell<PathBuf>> = Rc::new(RefCell::new(
+            right_path.parent().unwrap_or(Path::new("")).to_path_buf(),
+        ));
+        gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+            if !alive.get() {
+                return gtk4::glib::ControlFlow::Break;
+            }
+            let cur_left = lsp.borrow().parent().unwrap_or(Path::new("")).to_path_buf();
+            if cur_left != *watched_left_dir.borrow() {
+                diff_watcher.watch(&cur_left);
+                (*watched_left_dir.borrow_mut()).clone_from(&cur_left);
+            }
+            let cur_right = rsp.borrow().parent().unwrap_or(Path::new("")).to_path_buf();
+            if cur_right != *watched_right_dir.borrow() {
+                diff_watcher.watch(&cur_right);
+                (*watched_right_dir.borrow_mut()).clone_from(&cur_right);
+            }
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+
     // Window title / tab title
     let left_name = if is_blank_path(&left_path) {
         "Untitled".to_string()
@@ -154,7 +184,7 @@ pub(super) fn build_file_window(
     }
 
     window.connect_destroy(move |_| {
-        diff_watcher.alive.set(false);
+        watcher_alive.set(false);
     });
 
     window.present();

@@ -229,7 +229,7 @@
 - [ ] Ctrl+Shift+O: opens focused file externally (works for all 3 panes)
 - [ ] Ctrl+R / F5 (Refresh): reloads all 3 files from disk
 - [ ] Refresh with unsaved middle: confirm dialog before reloading
-- [ ] After Save As, watcher still monitors original source files (by design)
+- [ ] After Save As, watcher reloads from new path (left/right still watch originals)
 
 ### Edge Cases
 - [ ] Binary files: all panes show info bar; all read-only; middle save hidden

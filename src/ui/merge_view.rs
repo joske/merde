@@ -10,6 +10,7 @@ pub(super) struct MergeViewResult {
     pub(super) right_buf: TextBuffer,
     pub(super) middle_view: TextView,
     pub(super) middle_save: Button,
+    pub(super) middle_save_path: Rc<RefCell<PathBuf>>,
     pub(super) middle_tab_path: Rc<RefCell<String>>,
     pub(super) action_group: gio::SimpleActionGroup,
 }
@@ -2515,6 +2516,7 @@ pub(super) fn build_merge_view(
         right_buf,
         middle_view: middle_pane.text_view,
         middle_save: middle_pane.save_btn,
+        middle_save_path: middle_pane.save_path,
         middle_tab_path: middle_pane.tab_path,
         action_group,
     }
@@ -2539,17 +2541,21 @@ pub(super) fn build_merge_window(
     let mb = mv.middle_buf.clone();
     let rb = mv.right_buf.clone();
     let lp = left_path.clone();
-    let mp = middle_path.clone();
+    let msp = mv.middle_save_path.clone();
     let rp = right_path.clone();
     let m_save = mv.middle_save.clone();
     let loading = Rc::new(Cell::new(false));
     let dirty = Rc::new(Cell::new(false));
     let retry_count = Rc::new(Cell::new(0u32));
+    let watched_mid_dir: Rc<RefCell<PathBuf>> = Rc::new(RefCell::new(
+        middle_path.parent().unwrap_or(Path::new("")).to_path_buf(),
+    ));
     let merge_watcher = start_file_watcher(&watch_paths, false, None, move |fs_dirty| {
         if fs_dirty {
             dirty.set(true);
             retry_count.set(0);
         }
+        let mp = msp.borrow().clone();
         if dirty.get() && !loading.get() && !is_saving(&[&lp, &mp, &rp]) && !m_save.is_sensitive() {
             dirty.set(false);
             loading.set(true);
@@ -2603,6 +2609,25 @@ pub(super) fn build_merge_window(
         }
     });
 
+    // Monitor middle save_path: if Save As moved it to a different directory,
+    // tell the watcher to monitor that directory too.
+    let watcher_alive = merge_watcher.alive.clone();
+    {
+        let msp = mv.middle_save_path.clone();
+        let alive = watcher_alive.clone();
+        gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
+            if !alive.get() {
+                return gtk4::glib::ControlFlow::Break;
+            }
+            let cur_dir = msp.borrow().parent().unwrap_or(Path::new("")).to_path_buf();
+            if cur_dir != *watched_mid_dir.borrow() {
+                merge_watcher.watch(&cur_dir);
+                (*watched_mid_dir.borrow_mut()).clone_from(&cur_dir);
+            }
+            gtk4::glib::ControlFlow::Continue
+        });
+    }
+
     // Window title / tab title
     let left_name = left_path.file_name().map_or_else(
         || left_path.display().to_string(),
@@ -2646,7 +2671,7 @@ pub(super) fn build_merge_window(
     }
 
     window.connect_destroy(move |_| {
-        merge_watcher.alive.set(false);
+        watcher_alive.set(false);
     });
 
     mv.middle_view.grab_focus();
