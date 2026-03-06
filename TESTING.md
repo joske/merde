@@ -150,6 +150,7 @@
 
 ### Context Menu
 - [ ] Right-click selects the clicked row first
+- [ ] Right-click targets correct row: select row A, right-click row B, action operates on B (not A)
 - [ ] "Open Diff": opens diff tab (disabled for directories)
 - [ ] "Copy to Left" / "Copy to Right": enabled for appropriate statuses
 - [ ] "Delete": always available
