@@ -194,7 +194,23 @@ make test-release
 make test-release
 ```
 
-`make test-release` runs `cargo test` followed by `pytest tests/ui_integration/ -v` under `xvfb-run`.
+`make test-release` runs `cargo test` followed by `pytest tests/ui_integration/ -v` under `dbus-run-session` + `xvfb-run`.
+
+**Required system packages (Debian/Ubuntu)**
+
+```bash
+sudo apt install \
+  libgtksourceview-5-dev \
+  xvfb \
+  fonts-dejavu-core \
+  at-spi2-core \
+  gir1.2-atspi-2.0 \
+  gir1.2-gtk-3.0 \
+  dbus-x11 \
+  xdotool \
+  python3-pip \
+  python3-gi
+```
 
 **Running UI tests manually (with a display)**
 
