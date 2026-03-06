@@ -45,6 +45,10 @@ fn map_line_through_chunks(
         let (ms, me, os, oe) = (m_start as f64, m_end as f64, o_start as f64, o_end as f64);
 
         if chunk.tag == DiffTag::Equal {
+            if me >= source_line {
+                // Source line is inside this equal region — 1:1 mapping.
+                return os + (source_line - ms);
+            }
             m_begin = me;
             o_begin = oe;
             continue;
