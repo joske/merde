@@ -395,10 +395,15 @@ fn make_field_factory(is_left: bool, field_idx: usize) -> SignalListItemFactory 
 pub(super) fn build_dir_tab(
     left_dir: std::path::PathBuf,
     right_dir: std::path::PathBuf,
+    labels: &[String],
     settings: Rc<RefCell<Settings>>,
     notebook: &Notebook,
     open_tabs: &Rc<RefCell<Vec<FileTab>>>,
 ) -> (GtkBox, FileWatcher, ColumnView, String) {
+    let left_label_override: Rc<RefCell<Option<String>>> =
+        Rc::new(RefCell::new(labels.first().cloned()));
+    let right_label_override: Rc<RefCell<Option<String>>> =
+        Rc::new(RefCell::new(labels.get(1).cloned()));
     let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
     let right_dir = Rc::new(RefCell::new(right_dir.to_string_lossy().into_owned()));
 
@@ -648,7 +653,11 @@ pub(super) fn build_dir_tab(
     }
 
     // Directory path headers above each pane
-    let left_header = Label::new(Some(&shortened_path(Path::new(&*left_dir.borrow()))));
+    let left_header_text = match *left_label_override.borrow() {
+        Some(ref l) => l.clone(),
+        None => shortened_path(Path::new(&*left_dir.borrow())),
+    };
+    let left_header = Label::new(Some(&left_header_text));
     left_header.set_tooltip_text(Some(&*left_dir.borrow()));
     left_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     left_header.set_hexpand(true);
@@ -656,7 +665,11 @@ pub(super) fn build_dir_tab(
     left_header.set_margin_end(6);
     left_header.set_margin_top(4);
     left_header.set_margin_bottom(4);
-    let right_header = Label::new(Some(&shortened_path(Path::new(&*right_dir.borrow()))));
+    let right_header_text = match *right_label_override.borrow() {
+        Some(ref l) => l.clone(),
+        None => shortened_path(Path::new(&*right_dir.borrow())),
+    };
+    let right_header = Label::new(Some(&right_header_text));
     right_header.set_tooltip_text(Some(&*right_dir.borrow()));
     right_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     right_header.set_hexpand(true);
@@ -852,6 +865,8 @@ pub(super) fn build_dir_tab(
     {
         let ld = left_dir.clone();
         let rd = right_dir.clone();
+        let ll = left_label_override.clone();
+        let rl = right_label_override.clone();
         let reload = reload_dir.clone();
         let lh = left_header.clone();
         let rh = right_header.clone();
@@ -859,9 +874,20 @@ pub(super) fn build_dir_tab(
             let tmp = ld.borrow().clone();
             (*ld.borrow_mut()).clone_from(&rd.borrow());
             *rd.borrow_mut() = tmp;
-            lh.set_text(&shortened_path(Path::new(&*ld.borrow())));
+            let tmp_label = ll.borrow().clone();
+            (*ll.borrow_mut()).clone_from(&rl.borrow());
+            *rl.borrow_mut() = tmp_label;
+            let left_text = match *ll.borrow() {
+                Some(ref l) => l.clone(),
+                None => shortened_path(Path::new(&*ld.borrow())),
+            };
+            lh.set_text(&left_text);
             lh.set_tooltip_text(Some(&*ld.borrow()));
-            rh.set_text(&shortened_path(Path::new(&*rd.borrow())));
+            let right_text = match *rl.borrow() {
+                Some(ref l) => l.clone(),
+                None => shortened_path(Path::new(&*rd.borrow())),
+            };
+            rh.set_text(&right_text);
             rh.set_tooltip_text(Some(&*rd.borrow()));
             // Update window title
             if let Some(win) = btn
@@ -1441,6 +1467,7 @@ pub(super) fn build_dir_window(
     app: &Application,
     left_dir: std::path::PathBuf,
     right_dir: std::path::PathBuf,
+    labels: &[String],
     settings: Rc<RefCell<Settings>>,
 ) {
     let AppWindow {
@@ -1450,7 +1477,7 @@ pub(super) fn build_dir_window(
     } = build_app_window(app, &settings, 900, 600, true);
 
     let (dir_tab, dir_watcher, left_view, title) =
-        build_dir_tab(left_dir, right_dir, settings, &notebook, &open_tabs);
+        build_dir_tab(left_dir, right_dir, labels, settings, &notebook, &open_tabs);
     notebook.append_page(&dir_tab, Some(&Label::new(Some(&title))));
 
     window.connect_destroy(move |_| {

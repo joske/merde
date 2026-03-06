@@ -230,8 +230,8 @@ pub fn build_ui(application: &Application, mode: CompareMode) {
             CompareMode::Dirs {
                 left,
                 right,
-                labels: _,
-            } => build_dir_window(app, left, right, settings),
+                labels,
+            } => build_dir_window(app, left, right, &labels, settings),
             CompareMode::Files {
                 left,
                 right,

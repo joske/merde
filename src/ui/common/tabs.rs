@@ -513,7 +513,7 @@ pub fn build_new_comparison_tab(
                             && let Some(second_path) = second.path()
                         {
                             let (dir_widget, dir_watcher, left_view, dir_title) =
-                                build_dir_tab(first_path, second_path, st3, &nb3, &tabs3);
+                                build_dir_tab(first_path, second_path, &[], st3, &nb3, &tabs3);
 
                             // Tab label with close button
                             let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
