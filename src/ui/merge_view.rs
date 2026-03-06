@@ -1674,6 +1674,11 @@ pub(super) fn build_merge_view(
             let st = settings.clone();
             let my_tv = tv.clone();
             let sens = merge_nav_sensitivity;
+            let lf = left_pane.filler_overlay.clone();
+            let mf = middle_pane.filler_overlay.clone();
+            let rf = right_pane.filler_overlay.clone();
+            let lg = left_gutter.clone();
+            let rg = right_gutter.clone();
             buf.connect_cursor_position_notify(move |_| {
                 if av.borrow().clone() != my_tv {
                     return;
@@ -1681,7 +1686,9 @@ pub(super) fn build_merge_view(
                 let chunks = if is_right { rch.borrow() } else { lch.borrow() };
                 let cursor_line = cursor_line_from_view(&my_tv);
                 let at = diff_state::chunk_at_cursor(&chunks, cursor_line, side);
-                cur.set(at.map(|idx| (idx, is_right)));
+                let prev_at = cur.get();
+                let new_at = at.map(|idx| (idx, is_right));
+                cur.set(new_at);
                 let all = merge_change_indices(&lch.borrow(), &rch.borrow());
                 let total = all.len();
                 if total == 0 {
@@ -1706,6 +1713,13 @@ pub(super) fn build_merge_view(
                     &rtv,
                     wrap,
                 );
+                if new_at != prev_at {
+                    lf.queue_draw();
+                    mf.queue_draw();
+                    rf.queue_draw();
+                    lg.queue_draw();
+                    rg.queue_draw();
+                }
             });
         };
         connect_side_cursor(&left_buf, &left_pane.text_view, Side::A, false);
@@ -1731,6 +1745,11 @@ pub(super) fn build_merge_view(
             let st = settings.clone();
             let sens = merge_nav_sensitivity;
             let csens = conflict_nav_sensitivity;
+            let lf = left_pane.filler_overlay.clone();
+            let mf = middle_pane.filler_overlay.clone();
+            let rf = right_pane.filler_overlay.clone();
+            let lg = left_gutter.clone();
+            let rg = right_gutter.clone();
             middle_buf.connect_cursor_position_notify(move |_| {
                 if av.borrow().clone() != mtv {
                     return;
@@ -1743,6 +1762,7 @@ pub(super) fn build_merge_view(
                 let at = left_at
                     .map(|idx| (idx, false))
                     .or_else(|| right_at.map(|idx| (idx, true)));
+                let prev_at = cur.get();
                 cur.set(at);
                 update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), at);
 
@@ -1763,6 +1783,14 @@ pub(super) fn build_merge_view(
                 ccur.set(in_conflict);
                 update_conflict_label(&clbl, &mb, in_conflict);
                 csens(&pcb, &ncb, &mb, &mtv, wrap);
+
+                if at != prev_at {
+                    lf.queue_draw();
+                    mf.queue_draw();
+                    rf.queue_draw();
+                    lg.queue_draw();
+                    rg.queue_draw();
+                }
             });
         }
     }

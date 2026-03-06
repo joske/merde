@@ -763,6 +763,9 @@ pub(super) fn build_diff_view(
             let av = active_view.clone();
             let st = settings.clone();
             let my_tv = tv.clone();
+            let lf = left_pane.filler_overlay.clone();
+            let rf = right_pane.filler_overlay.clone();
+            let gut = gutter.clone();
             buf.connect_cursor_position_notify(move |_| {
                 // Only react when this view is the active (focused) one
                 if av.borrow().clone() != my_tv {
@@ -771,6 +774,7 @@ pub(super) fn build_diff_view(
                 let chunks_ref = ch.borrow();
                 let cursor_line = cursor_line_from_view(&my_tv);
                 let at = diff_state::chunk_at_cursor(&chunks_ref, cursor_line, side);
+                let prev_at = cur.get();
                 cur.set(at);
                 update_chunk_label(&lbl, &chunks_ref, at);
                 let wrap = st.borrow().wrap_around_navigation;
@@ -778,6 +782,11 @@ pub(super) fn build_diff_view(
                     diff_state::chunk_nav_sensitivity(&chunks_ref, cursor_line, side, wrap);
                 pb.set_sensitive(prev);
                 nb.set_sensitive(next);
+                if at != prev_at {
+                    lf.queue_draw();
+                    rf.queue_draw();
+                    gut.queue_draw();
+                }
             });
         };
         connect_cursor_tracking(&left_buf, &left_pane.text_view, Side::A);
