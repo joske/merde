@@ -1522,7 +1522,7 @@ pub(super) fn build_merge_view(
         let ls = left_pane.scroll.clone();
         let ch = left_chunks.clone();
         left_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), true);
+            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), Side::A);
         });
     }
     {
@@ -1548,7 +1548,7 @@ pub(super) fn build_merge_view(
         let rs = right_pane.scroll.clone();
         let ch = right_chunks.clone();
         right_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), false);
+            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), Side::B);
         });
     }
     {

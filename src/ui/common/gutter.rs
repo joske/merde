@@ -36,6 +36,37 @@ pub enum GutterArrows {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn draw_gutter_band(
+    cr: &gtk4::cairo::Context,
+    width: f64,
+    lt: f64,
+    lb: f64,
+    rt: f64,
+    rb: f64,
+    r: f64,
+    g: f64,
+    b: f64,
+    arrows: &GutterArrows,
+) {
+    cr.set_source_rgba(r, g, b, 0.3);
+    cr.move_to(0.0, lt);
+    cr.curve_to(width * 0.5, lt, width * 0.5, rt, width, rt);
+    cr.line_to(width, rb);
+    cr.curve_to(width * 0.5, rb, width * 0.5, lb, 0.0, lb);
+    cr.close_path();
+    let _ = cr.fill();
+
+    let left_mid = f64::midpoint(lt, lb);
+    let right_mid = f64::midpoint(rt, rb);
+    if matches!(arrows, GutterArrows::Both | GutterArrows::LeftToRight) {
+        draw_edge_arrow(cr, 2.0, left_mid, true, r, g, b);
+    }
+    if matches!(arrows, GutterArrows::Both | GutterArrows::RightToLeft) {
+        draw_edge_arrow(cr, width - 2.0, right_mid, false, r, g, b);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn draw_gutter(
     cr: &gtk4::cairo::Context,
     width: f64,
@@ -65,24 +96,7 @@ pub fn draw_gutter(
             DiffTag::Equal => continue,
         };
 
-        // Filled band
-        cr.set_source_rgba(r, g, b, 0.3);
-        cr.move_to(0.0, lt);
-        cr.curve_to(width * 0.5, lt, width * 0.5, rt, width, rt);
-        cr.line_to(width, rb);
-        cr.curve_to(width * 0.5, rb, width * 0.5, lb, 0.0, lb);
-        cr.close_path();
-        let _ = cr.fill();
-
-        // Edge-aligned arrows (meld style)
-        let left_mid = f64::midpoint(lt, lb);
-        let right_mid = f64::midpoint(rt, rb);
-        if matches!(arrows, GutterArrows::Both | GutterArrows::LeftToRight) {
-            draw_edge_arrow(cr, 2.0, left_mid, true, r, g, b);
-        }
-        if matches!(arrows, GutterArrows::Both | GutterArrows::RightToLeft) {
-            draw_edge_arrow(cr, width - 2.0, right_mid, false, r, g, b);
-        }
+        draw_gutter_band(cr, width, lt, lb, rt, rb, r, g, b, arrows);
     }
 }
 
@@ -275,22 +289,7 @@ pub fn draw_merge_gutter(
             }
         };
 
-        cr.set_source_rgba(r, g, b, 0.3);
-        cr.move_to(0.0, lt);
-        cr.curve_to(width * 0.5, lt, width * 0.5, rt, width, rt);
-        cr.line_to(width, rb);
-        cr.curve_to(width * 0.5, rb, width * 0.5, lb, 0.0, lb);
-        cr.close_path();
-        let _ = cr.fill();
-
-        let left_mid = f64::midpoint(lt, lb);
-        let right_mid = f64::midpoint(rt, rb);
-        if matches!(arrows, GutterArrows::Both | GutterArrows::LeftToRight) {
-            draw_edge_arrow(cr, 2.0, left_mid, true, r, g, b);
-        }
-        if matches!(arrows, GutterArrows::Both | GutterArrows::RightToLeft) {
-            draw_edge_arrow(cr, width - 2.0, right_mid, false, r, g, b);
-        }
+        draw_gutter_band(cr, width, lt, lb, rt, rb, r, g, b, arrows);
     }
 }
 

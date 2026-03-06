@@ -7,13 +7,13 @@ pub fn draw_chunk_map(
     total_lines: i32,
     scroll: &ScrolledWindow,
     chunks: &[DiffChunk],
-    is_left: bool,
+    side: Side,
 ) {
     if total_lines <= 0 || height <= 0.0 {
         return;
     }
 
-    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, is_left)
+    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, side)
     {
         let (r, g, b) = match rect.tag {
             DiffTag::Replace => band_replace(),

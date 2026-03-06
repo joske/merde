@@ -6,6 +6,14 @@ pub fn is_blank_path(p: &Path) -> bool {
     p.as_os_str().is_empty()
 }
 
+fn is_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8192).any(|&b| b == 0)
+}
+
+pub fn find_window(widget: &impl IsA<gtk4::Widget>) -> Option<ApplicationWindow> {
+    widget.root().and_then(|r| r.downcast::<ApplicationWindow>().ok())
+}
+
 /// Read a file as text, returning content and whether it was binary.
 /// Binary files return an empty string and `true`.
 /// Only reads the file once.
@@ -13,7 +21,7 @@ pub fn read_file_content(path: &Path) -> (String, bool) {
     let Ok(bytes) = fs::read(path) else {
         return (String::new(), false);
     };
-    if bytes.iter().take(8192).any(|&b| b == 0) {
+    if is_binary(&bytes) {
         (String::new(), true)
     } else {
         (String::from_utf8_lossy(&bytes).into_owned(), false)
@@ -24,7 +32,7 @@ pub fn read_file_content(path: &Path) -> (String, bool) {
 /// Only reads the file once.
 pub fn read_file_for_reload(path: &Path) -> Option<String> {
     let bytes = fs::read(path).ok()?;
-    if bytes.iter().take(8192).any(|&b| b == 0) {
+    if is_binary(&bytes) {
         return None;
     }
     Some(String::from_utf8_lossy(&bytes).into_owned())
@@ -39,10 +47,7 @@ pub fn save_file(path: &Path, content: &str, save_btn: &Button) {
             save_btn.set_sensitive(false);
         }
         Err(e) => {
-            if let Some(win) = save_btn
-                .root()
-                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-            {
+            if let Some(win) = find_window(save_btn) {
                 show_error_dialog(&win, &format!("Failed to save {}: {e}", path.display()));
             }
         }
@@ -446,9 +451,7 @@ pub fn save_as_pane(
     tab_path: Option<Rc<RefCell<String>>>,
 ) {
     let dialog = gtk4::FileDialog::builder().title("Save As").build();
-    let win = save_btn
-        .root()
-        .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+    let win = find_window(&save_btn);
     dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result
             && let Some(path) = file.path()
@@ -466,10 +469,7 @@ pub fn save_as_pane(
                     }
                 }
                 Err(e) => {
-                    if let Some(win) = save_btn
-                        .root()
-                        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                    {
+                    if let Some(win) = find_window(&save_btn) {
                         show_error_dialog(&win, &format!("Failed to save {}: {e}", path.display()));
                     }
                 }

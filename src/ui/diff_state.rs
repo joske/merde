@@ -93,10 +93,10 @@ pub(super) fn format_chunk_label(chunks: &[DiffChunk], current: Option<usize>) -
             if let Some(pos) = non_equal.iter().position(|&i| i == cur) {
                 format!("Change {} of {}", pos + 1, total)
             } else {
-                format!("{total} changes")
+                format!("{total} {}", if total == 1 { "change" } else { "changes" })
             }
         }
-        None => format!("{total} changes"),
+        None => format!("{total} {}", if total == 1 { "change" } else { "changes" }),
     }
 }
 
@@ -209,7 +209,7 @@ pub(super) fn hit_test_gutter_arrow(
 
 /// Compute chunk-map rectangles for the minimap sidebar.
 ///
-/// Skips `Equal` chunks. Uses `start_a`/`end_a` when `is_left` is true,
+/// Skips `Equal` chunks. Uses `start_a`/`end_a` when `side == Side::A`,
 /// otherwise `start_b`/`end_b`. Each rectangle has a minimum height of 2 pixels.
 /// Returns empty if `total_lines == 0` or `map_height <= 0.0`.
 #[must_use]
@@ -217,7 +217,7 @@ pub(super) fn compute_chunk_map_rects(
     chunks: &[DiffChunk],
     total_lines: usize,
     map_height: f64,
-    is_left: bool,
+    side: Side,
 ) -> Vec<ChunkMapRect> {
     if total_lines == 0 || map_height <= 0.0 {
         return Vec::new();
@@ -227,7 +227,7 @@ pub(super) fn compute_chunk_map_rects(
         .iter()
         .filter(|c| c.tag != DiffTag::Equal)
         .map(|c| {
-            let (start, end) = if is_left {
+            let (start, end) = if side == Side::A {
                 (c.start_a, c.end_a)
             } else {
                 (c.start_b, c.end_b)
@@ -527,14 +527,14 @@ mod tests {
     #[test]
     fn label_n_changes_no_current() {
         let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
-        assert_eq!(format_chunk_label(&chunks, None), "1 changes");
+        assert_eq!(format_chunk_label(&chunks, None), "1 change");
     }
 
     #[test]
     fn label_n_changes_current_is_equal() {
         let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
         // Current points to an Equal chunk (index 0)
-        assert_eq!(format_chunk_label(&chunks, Some(0)), "1 changes");
+        assert_eq!(format_chunk_label(&chunks, Some(0)), "1 change");
     }
 
     #[test]
@@ -554,7 +554,7 @@ mod tests {
     fn label_invalid_current_index() {
         let chunks = [eq(0, 3, 0, 3), rep(3, 5, 3, 6), eq(5, 10, 6, 11)];
         // Index 99 doesn't exist in the non-equal list
-        assert_eq!(format_chunk_label(&chunks, Some(99)), "1 changes");
+        assert_eq!(format_chunk_label(&chunks, Some(99)), "1 change");
     }
 
     // ── find_all_matches ────────────────────────────────────────────
@@ -661,7 +661,7 @@ mod tests {
     #[test]
     fn chunk_map_empty_chunks() {
         assert_eq!(
-            compute_chunk_map_rects(&[], 100, 500.0, true),
+            compute_chunk_map_rects(&[], 100, 500.0, Side::A),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -670,7 +670,7 @@ mod tests {
     fn chunk_map_zero_total_lines() {
         let chunks = [rep(0, 5, 0, 3)];
         assert_eq!(
-            compute_chunk_map_rects(&chunks, 0, 500.0, true),
+            compute_chunk_map_rects(&chunks, 0, 500.0, Side::A),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -679,7 +679,7 @@ mod tests {
     fn chunk_map_zero_map_height() {
         let chunks = [rep(0, 5, 0, 3)];
         assert_eq!(
-            compute_chunk_map_rects(&chunks, 100, 0.0, true),
+            compute_chunk_map_rects(&chunks, 100, 0.0, Side::A),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -688,7 +688,7 @@ mod tests {
     fn chunk_map_negative_map_height() {
         let chunks = [rep(0, 5, 0, 3)];
         assert_eq!(
-            compute_chunk_map_rects(&chunks, 100, -10.0, true),
+            compute_chunk_map_rects(&chunks, 100, -10.0, Side::A),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -697,7 +697,7 @@ mod tests {
     fn chunk_map_skips_equal() {
         let chunks = [eq(0, 10, 0, 10)];
         assert_eq!(
-            compute_chunk_map_rects(&chunks, 10, 100.0, true),
+            compute_chunk_map_rects(&chunks, 10, 100.0, Side::A),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -706,7 +706,7 @@ mod tests {
     fn chunk_map_basic_left() {
         // 100 total lines, 1000px height, replace chunk lines 10..20 on side A
         let chunks = [eq(0, 10, 0, 10), rep(10, 20, 10, 15), eq(20, 100, 15, 85)];
-        let rects = compute_chunk_map_rects(&chunks, 100, 1000.0, true);
+        let rects = compute_chunk_map_rects(&chunks, 100, 1000.0, Side::A);
         assert_eq!(rects.len(), 1);
         assert!((rects[0].y_start - 100.0).abs() < f64::EPSILON);
         assert!((rects[0].height - 100.0).abs() < f64::EPSILON);
@@ -717,7 +717,7 @@ mod tests {
     fn chunk_map_basic_right() {
         // Same chunks, but using side B (start_b=10, end_b=15)
         let chunks = [eq(0, 10, 0, 10), rep(10, 20, 10, 15), eq(20, 100, 15, 85)];
-        let rects = compute_chunk_map_rects(&chunks, 85, 850.0, false);
+        let rects = compute_chunk_map_rects(&chunks, 85, 850.0, Side::B);
         assert_eq!(rects.len(), 1);
         // y_start = (10/85)*850 = 100.0
         assert!((rects[0].y_start - 100.0).abs() < f64::EPSILON);
@@ -730,7 +730,7 @@ mod tests {
     fn chunk_map_minimum_height_clamp() {
         // 1 line out of 10000 at 100px -> raw height = 0.01, clamped to 2.0
         let chunks = [rep(500, 501, 500, 501)];
-        let rects = compute_chunk_map_rects(&chunks, 10000, 100.0, true);
+        let rects = compute_chunk_map_rects(&chunks, 10000, 100.0, Side::A);
         assert_eq!(rects.len(), 1);
         assert!((rects[0].height - 2.0).abs() < f64::EPSILON);
     }
@@ -744,7 +744,7 @@ mod tests {
             ins(15, 15, 12, 14),
             eq(15, 20, 14, 19),
         ];
-        let rects = compute_chunk_map_rects(&chunks, 20, 200.0, true);
+        let rects = compute_chunk_map_rects(&chunks, 20, 200.0, Side::A);
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].tag, DiffTag::Delete);
         assert_eq!(rects[1].tag, DiffTag::Insert);

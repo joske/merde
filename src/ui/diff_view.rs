@@ -526,7 +526,7 @@ pub(super) fn build_diff_view(
         let ls = left_pane.scroll.clone();
         let ch = chunks.clone();
         left_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), true);
+            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), Side::A);
         });
     }
     // Click to jump
@@ -553,7 +553,7 @@ pub(super) fn build_diff_view(
         let rs = right_pane.scroll.clone();
         let ch = chunks.clone();
         right_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), false);
+            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), Side::B);
         });
     }
     {

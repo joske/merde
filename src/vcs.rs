@@ -125,12 +125,9 @@ pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
     entries
 }
 
-/// Get the content of a file at HEAD.
-#[must_use]
-pub fn head_content(repo_root: &Path, rel_path: &str) -> Option<String> {
-    let arg = format!("HEAD:{rel_path}");
+fn git_show(repo_root: &Path, refspec: &str) -> Option<String> {
     let output = Command::new("git")
-        .args(["-C", &repo_root.to_string_lossy(), "show", &arg])
+        .args(["-C", &repo_root.to_string_lossy(), "show", refspec])
         .output()
         .ok()?;
     if output.status.success() {
@@ -140,19 +137,16 @@ pub fn head_content(repo_root: &Path, rel_path: &str) -> Option<String> {
     }
 }
 
+/// Get the content of a file at HEAD.
+#[must_use]
+pub fn head_content(repo_root: &Path, rel_path: &str) -> Option<String> {
+    git_show(repo_root, &format!("HEAD:{rel_path}"))
+}
+
 /// Get the content of a file at a specific merge stage (1=base, 2=ours, 3=theirs).
 #[must_use]
 pub fn stage_content(repo_root: &Path, rel_path: &str, stage: u8) -> Option<String> {
-    let arg = format!(":{stage}:{rel_path}");
-    let output = Command::new("git")
-        .args(["-C", &repo_root.to_string_lossy(), "show", &arg])
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).into_owned())
-    } else {
-        None
-    }
+    git_show(repo_root, &format!(":{stage}:{rel_path}"))
 }
 
 /// Discard local changes to a file.
