@@ -29,6 +29,58 @@ def find_app(name="mergers", retries=5):
     return None
 
 
+def wait_for_label(app, predicate, timeout=5, interval=0.5):
+    """Poll AT-SPI labels until `predicate(text)` returns True or timeout."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        labels = app.findChildren(lambda n: n.roleName == "label" and n.showing)
+        for label in labels:
+            try:
+                text = label.text or label.name or ""
+                if predicate(text):
+                    return text
+            except Exception:
+                continue
+        doDelay(interval)
+    return None
+
+
+def send_keys_until(app, key_combo, pid, predicate, retries=3, delay=1):
+    """Send a key combo and retry if the expected label change doesn't happen."""
+    for _ in range(retries):
+        _send_keys_impl(key_combo, pid)
+        result = wait_for_label(app, predicate, timeout=delay)
+        if result is not None:
+            return result
+    return None
+
+
+def send_keys(key_combo, pid):
+    """Public wrapper for sending keys."""
+    _send_keys_impl(key_combo, pid)
+
+
+def _send_keys_impl(key_combo, pid):
+    """Focus the mergers window by PID and send a key combo via xdotool."""
+    wids = (
+        subprocess.check_output(["xdotool", "search", "--pid", str(pid)])
+        .decode()
+        .strip()
+        .splitlines()
+    )
+    if not wids:
+        return
+    for wid in wids:
+        result = subprocess.run(
+            ["xdotool", "windowfocus", "--sync", wid],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            break
+    time.sleep(0.2)  # Let GTK process the focus event
+    subprocess.run(["xdotool", "key", key_combo], check=True)
+
+
 @pytest.fixture
 def app_process():
     """Launch mergers and yield the process. Kill on teardown."""

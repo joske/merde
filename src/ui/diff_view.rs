@@ -272,7 +272,7 @@ pub(super) fn build_diff_view(
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
-                draw_chunk_backgrounds(cr, w, &ltv, &ls, &ch.borrow(), Side::A, cur.get());
+                draw_chunk_backgrounds(cr, w, &ltv, &ls, &ch.borrow(), Side::A, cur.get(), None);
                 draw_fillers(cr, w, &ltv, &ls, &ch.borrow(), true);
             });
     }
@@ -285,7 +285,7 @@ pub(super) fn build_diff_view(
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
-                draw_chunk_backgrounds(cr, w, &rtv, &rs, &ch.borrow(), Side::B, cur.get());
+                draw_chunk_backgrounds(cr, w, &rtv, &rs, &ch.borrow(), Side::B, cur.get(), None);
                 draw_fillers(cr, w, &rtv, &rs, &ch.borrow(), false);
             });
     }
@@ -317,90 +317,25 @@ pub(super) fn build_diff_view(
     chunk_label.add_css_class("chunk-label");
     update_chunk_label(&chunk_label, &chunks.borrow(), None);
 
-    let prev_btn = Button::from_icon_name("go-up-symbolic");
-    prev_btn.set_tooltip_text(Some(&format!(
-        "Previous change (Alt+Up / {}+E)",
-        primary_key_name()
-    )));
-    let next_btn = Button::from_icon_name("go-down-symbolic");
-    next_btn.set_tooltip_text(Some(&format!(
-        "Next change (Alt+Down / {}+D)",
-        primary_key_name()
-    )));
+    let (prev_btn, next_btn, nav_box) = build_nav_button_group(
+        &format!("Previous change (Alt+Up / {}+E)", primary_key_name()),
+        &format!("Next change (Alt+Down / {}+D)", primary_key_name()),
+    );
+    let (undo_btn, redo_btn, undo_redo_box) = build_undo_redo_box(&active_view);
 
-    let nav_box = GtkBox::new(Orientation::Horizontal, 0);
-    nav_box.add_css_class("linked");
-    nav_box.append(&prev_btn);
-    nav_box.append(&next_btn);
-
-    // Undo/Redo buttons
-    let undo_btn = Button::from_icon_name("edit-undo-symbolic");
-    undo_btn.set_tooltip_text(Some(&format!("Undo ({}+Z)", primary_key_name())));
-    let redo_btn = Button::from_icon_name("edit-redo-symbolic");
-    redo_btn.set_tooltip_text(Some(&format!("Redo ({}+Shift+Z)", primary_key_name())));
-    let undo_redo_box = GtkBox::new(Orientation::Horizontal, 0);
-    undo_redo_box.add_css_class("linked");
-    undo_redo_box.append(&undo_btn);
-    undo_redo_box.append(&redo_btn);
-
-    {
-        let av = active_view.clone();
-        undo_btn.connect_clicked(move |_| {
-            let buf = av.borrow().buffer();
-            if buf.can_undo() {
-                buf.undo();
-            }
-        });
-    }
-    {
-        let av = active_view.clone();
-        redo_btn.connect_clicked(move |_| {
-            let buf = av.borrow().buffer();
-            if buf.can_redo() {
-                buf.redo();
-            }
-        });
-    }
-
-    // Go to line entry (hidden by default, shown by Ctrl+L)
-    let goto_entry = Entry::new();
-    goto_entry.set_placeholder_text(Some("Line #"));
-    goto_entry.set_width_chars(8);
-    goto_entry.add_css_class("goto-entry");
-    goto_entry.set_visible(false);
-    {
-        let av = active_view.clone();
-        let ls = left_pane.scroll.clone();
-        let entry = goto_entry.clone();
-        goto_entry.connect_activate(move |e| {
-            if let Ok(line) = e.text().trim().parse::<usize>() {
-                let tv = av.borrow().clone();
-                let buf = tv.buffer();
-                let target = line.saturating_sub(1); // 1-indexed to 0-indexed
-                let scroll = scroll_for_view(&tv, &ls);
-                scroll_to_line(&tv, &buf, target, &scroll);
-                if let Some(iter) = buf.iter_at_line(target as i32) {
-                    buf.place_cursor(&iter);
-                }
-                tv.grab_focus();
-            }
-            e.set_visible(false);
-            entry.set_text("");
-        });
-    }
-    {
-        let entry = goto_entry.clone();
-        let key_ctl = EventControllerKey::new();
-        key_ctl.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk4::gdk::Key::Escape {
-                entry.set_visible(false);
-                entry.set_text("");
-                return gtk4::glib::Propagation::Stop;
-            }
-            gtk4::glib::Propagation::Proceed
-        });
-        goto_entry.add_controller(key_ctl);
-    }
+    // ── Find bar (shared helper) ──────────────────────────────────
+    let action_group = gio::SimpleActionGroup::new();
+    let find = build_find_bar(
+        &action_group,
+        &active_view,
+        &left_pane.scroll,
+        &[
+            (left_pane.text_view.clone(), left_buf.clone()),
+            (right_pane.text_view.clone(), right_buf.clone()),
+        ],
+    );
+    let find_revealer = find.revealer;
+    let goto_entry = find.goto_entry;
 
     let toolbar = GtkBox::new(Orientation::Horizontal, 8);
     toolbar.set_margin_start(6);
@@ -420,21 +355,12 @@ pub(super) fn build_diff_view(
     }
 
     // Text filter toggles
-    let blank_toggle = ToggleButton::with_label("Blanks");
-    blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
-    blank_toggle.set_active(ignore_blanks.get());
-    let ws_toggle = ToggleButton::with_label("Spaces");
-    ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
-    ws_toggle.set_active(ignore_whitespace.get());
+    let (blank_toggle, ws_toggle, filter_box) =
+        build_filter_toggles(ignore_blanks.get(), ignore_whitespace.get());
     if any_binary {
         blank_toggle.set_sensitive(false);
         ws_toggle.set_sensitive(false);
     }
-
-    let filter_box = GtkBox::new(Orientation::Horizontal, 0);
-    filter_box.add_css_class("linked");
-    filter_box.append(&blank_toggle);
-    filter_box.append(&ws_toggle);
 
     let patch_btn = Button::from_icon_name("document-save-as-symbolic");
     patch_btn.set_tooltip_text(Some(&format!(
@@ -840,6 +766,9 @@ pub(super) fn build_diff_view(
             let av = active_view.clone();
             let st = settings.clone();
             let my_tv = tv.clone();
+            let lf = left_pane.filler_overlay.clone();
+            let rf = right_pane.filler_overlay.clone();
+            let gut = gutter.clone();
             buf.connect_cursor_position_notify(move |_| {
                 // Only react when this view is the active (focused) one
                 if av.borrow().clone() != my_tv {
@@ -848,6 +777,7 @@ pub(super) fn build_diff_view(
                 let chunks_ref = ch.borrow();
                 let cursor_line = cursor_line_from_view(&my_tv);
                 let at = diff_state::chunk_at_cursor(&chunks_ref, cursor_line, side);
+                let prev_at = cur.get();
                 cur.set(at);
                 update_chunk_label(&lbl, &chunks_ref, at);
                 let wrap = st.borrow().wrap_around_navigation;
@@ -855,233 +785,15 @@ pub(super) fn build_diff_view(
                     diff_state::chunk_nav_sensitivity(&chunks_ref, cursor_line, side, wrap);
                 pb.set_sensitive(prev);
                 nb.set_sensitive(next);
+                if at != prev_at {
+                    lf.queue_draw();
+                    rf.queue_draw();
+                    gut.queue_draw();
+                }
             });
         };
         connect_cursor_tracking(&left_buf, &left_pane.text_view, Side::A);
         connect_cursor_tracking(&right_buf, &right_pane.text_view, Side::B);
-    }
-
-    // ── Find bar ──────────────────────────────────────────────────
-    let find_entry = Entry::new();
-    find_entry.set_placeholder_text(Some(&format!("Find ({}+F)", primary_key_name())));
-    find_entry.set_hexpand(true);
-
-    let replace_entry = Entry::new();
-    replace_entry.set_placeholder_text(Some("Replace"));
-    replace_entry.set_hexpand(true);
-
-    let find_prev_btn = Button::from_icon_name("go-up-symbolic");
-    find_prev_btn.set_tooltip_text(Some("Previous match (Shift+F3)"));
-    let find_next_btn = Button::from_icon_name("go-down-symbolic");
-    find_next_btn.set_tooltip_text(Some("Next match (F3)"));
-    let match_label = Label::new(None);
-    match_label.add_css_class("chunk-label");
-    let find_close_btn = Button::from_icon_name("window-close-symbolic");
-    find_close_btn.set_has_frame(false);
-    find_close_btn.set_tooltip_text(Some("Close (Escape)"));
-
-    let replace_btn = Button::with_label("Replace");
-    let replace_all_btn = Button::with_label("All");
-    let replace_row = GtkBox::new(Orientation::Horizontal, 4);
-    replace_row.set_margin_start(6);
-    replace_row.set_margin_end(6);
-    replace_row.append(&replace_entry);
-    replace_row.append(&replace_btn);
-    replace_row.append(&replace_all_btn);
-    replace_row.set_visible(false);
-
-    let find_nav = GtkBox::new(Orientation::Horizontal, 0);
-    find_nav.add_css_class("linked");
-    find_nav.append(&find_prev_btn);
-    find_nav.append(&find_next_btn);
-
-    let find_row = GtkBox::new(Orientation::Horizontal, 4);
-    find_row.set_margin_start(6);
-    find_row.set_margin_end(6);
-    find_row.append(&find_entry);
-    find_row.append(&find_nav);
-    find_row.append(&match_label);
-    find_row.append(&find_close_btn);
-
-    let find_bar = GtkBox::new(Orientation::Vertical, 2);
-    find_bar.add_css_class("find-bar");
-    find_bar.append(&find_row);
-    find_bar.append(&replace_row);
-
-    let find_revealer = Revealer::new();
-    find_revealer.set_child(Some(&find_bar));
-    find_revealer.set_reveal_child(false);
-    find_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideUp);
-
-    // Search logic: highlight matches when find entry text changes
-    {
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let ml = match_label.clone();
-        find_entry.connect_changed(move |e| {
-            let needle = e.text().to_string();
-            let lc = highlight_search_matches(&lb, &needle);
-            let rc = highlight_search_matches(&rb, &needle);
-            let total = lc + rc;
-            if needle.is_empty() {
-                ml.set_label("");
-            } else if total == 0 {
-                ml.set_label("No matches");
-            } else {
-                ml.set_label(&format!("{total} matches"));
-            }
-        });
-    }
-
-    // Find next
-    {
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ls = left_pane.scroll.clone();
-        find_next_btn.connect_clicked(move |_| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ls);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Find prev
-    {
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ls = left_pane.scroll.clone();
-        find_prev_btn.connect_clicked(move |_| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ls);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Find entry Enter = find next
-    {
-        let av = active_view.clone();
-        let ls = left_pane.scroll.clone();
-        find_entry.connect_activate(move |e| {
-            let needle = e.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ls);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Replace
-    {
-        let av = active_view.clone();
-        let find_e = find_entry.clone();
-        let repl_e = replace_entry.clone();
-        replace_btn.connect_clicked(move |_| {
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let (sel_start, sel_end) = buf.selection_bounds().unwrap_or_else(|| {
-                let c = buf.iter_at_mark(&buf.get_insert());
-                (c, c)
-            });
-            let selected = buf.text(&sel_start, &sel_end, false).to_string();
-            let needle = find_e.text().to_string();
-            if !needle.is_empty() && selected.to_lowercase() == needle.to_lowercase() {
-                let replacement = repl_e.text().to_string();
-                let mut s = sel_start;
-                let mut e = sel_end;
-                buf.delete(&mut s, &mut e);
-                buf.insert(&mut s, &replacement);
-            }
-        });
-    }
-
-    // Replace all
-    {
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let find_e = find_entry.clone();
-        let repl_e = replace_entry.clone();
-        replace_all_btn.connect_clicked(move |_| {
-            let needle = find_e.text().to_string();
-            let replacement = repl_e.text().to_string();
-            if needle.is_empty() {
-                return;
-            }
-            let needle_lower = needle.to_lowercase();
-            for buf in [&lb, &rb] {
-                let text = buf
-                    .text(&buf.start_iter(), &buf.end_iter(), false)
-                    .to_string();
-                // Case-insensitive replace to match CASE_INSENSITIVE find
-                let mut new_text = String::with_capacity(text.len());
-                let mut remaining = text.as_str();
-                while let Some(pos) = remaining.to_lowercase().find(&needle_lower) {
-                    new_text.push_str(&remaining[..pos]);
-                    new_text.push_str(&replacement);
-                    remaining = &remaining[(pos + needle.len())..];
-                }
-                new_text.push_str(remaining);
-                if new_text != text {
-                    buf.set_text(&new_text);
-                }
-            }
-        });
-    }
-
-    // Close find bar
-    {
-        let fr = find_revealer.clone();
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        find_close_btn.connect_clicked(move |_| {
-            fr.set_reveal_child(false);
-            clear_search_tags(&lb);
-            clear_search_tags(&rb);
-        });
-    }
-
-    // Escape in find entry closes find bar
-    // Escape on find/replace entries closes the find bar
-    for entry in [&find_entry, &replace_entry] {
-        let fr = find_revealer.clone();
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let fnb = find_next_btn.clone();
-        let fpb = find_prev_btn.clone();
-        let key_ctl = EventControllerKey::new();
-        key_ctl.connect_key_pressed(move |_, key, _, mods| {
-            if key == gtk4::gdk::Key::Escape {
-                fr.set_reveal_child(false);
-                clear_search_tags(&lb);
-                clear_search_tags(&rb);
-                return gtk4::glib::Propagation::Stop;
-            }
-            if key == gtk4::gdk::Key::F3 {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    fpb.emit_clicked();
-                } else {
-                    fnb.emit_clicked();
-                }
-                return gtk4::glib::Propagation::Stop;
-            }
-            gtk4::glib::Propagation::Proceed
-        });
-        entry.add_controller(key_ctl);
     }
 
     // Layout: toolbar + separator + [chunk_map | left pane | gutter | right pane | chunk_map] + find bar
@@ -1101,8 +813,7 @@ pub(super) fn build_diff_view(
     widget.append(&diff_row);
     widget.append(&find_revealer);
 
-    // GAction group for keyboard shortcuts
-    let action_group = gio::SimpleActionGroup::new();
+    // Remaining GActions for keyboard shortcuts
     {
         let action = gio::SimpleAction::new("prev-chunk", None);
         let ch = chunks.clone();
@@ -1193,81 +904,6 @@ pub(super) fn build_diff_view(
         });
         action_group.add_action(&action);
     }
-    // Find action (Ctrl+F)
-    {
-        let action = gio::SimpleAction::new("find", None);
-        let fr = find_revealer.clone();
-        let fe = find_entry.clone();
-        let rr = replace_row.clone();
-        action.connect_activate(move |_, _| {
-            rr.set_visible(false);
-            fr.set_reveal_child(true);
-            fe.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-    // Find-replace action (Ctrl+H)
-    {
-        let action = gio::SimpleAction::new("find-replace", None);
-        let fr = find_revealer.clone();
-        let fe = find_entry.clone();
-        let rr = replace_row.clone();
-        action.connect_activate(move |_, _| {
-            rr.set_visible(true);
-            fr.set_reveal_child(true);
-            fe.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-    // Find next (F3)
-    {
-        let action = gio::SimpleAction::new("find-next", None);
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ls = left_pane.scroll.clone();
-        action.connect_activate(move |_, _| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ls);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-        action_group.add_action(&action);
-    }
-    // Find prev (Shift+F3)
-    {
-        let action = gio::SimpleAction::new("find-prev", None);
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ls = left_pane.scroll.clone();
-        action.connect_activate(move |_, _| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ls);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-        action_group.add_action(&action);
-    }
-    // Go to line (Ctrl+L)
-    {
-        let action = gio::SimpleAction::new("go-to-line", None);
-        let ge = goto_entry.clone();
-        action.connect_activate(move |_, _| {
-            ge.set_visible(true);
-            ge.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-
     // Export patch
     {
         let export_patch = {
@@ -1385,45 +1021,13 @@ pub(super) fn build_diff_view(
         let ls = left_pane.save_btn.clone();
         let rs = right_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            let do_reload = {
-                let lsp = lsp.clone();
-                let rsp = rsp.clone();
-                let lb = lb.clone();
-                let rb = rb.clone();
-                let ls = ls.clone();
-                let rs = rs.clone();
-                move || {
-                    if !is_blank_path(&lsp.borrow())
-                        && let Some(lc) = read_file_for_reload(&lsp.borrow())
-                    {
-                        lb.set_text(&lc);
-                        ls.set_sensitive(false);
-                    }
-                    if !is_blank_path(&rsp.borrow())
-                        && let Some(rc) = read_file_for_reload(&rsp.borrow())
-                    {
-                        rb.set_text(&rc);
-                        rs.set_sensitive(false);
-                    }
-                }
-            };
-            if ls.is_sensitive() || rs.is_sensitive() {
-                if let Some(win) = ls
-                    .root()
-                    .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                {
-                    let reload = do_reload;
-                    show_confirm_dialog(
-                        &win,
-                        "Discard Changes?",
-                        "Unsaved changes will be lost. Reload from disk?",
-                        "Reload",
-                        reload,
-                    );
-                }
-            } else {
-                do_reload();
-            }
+            refresh_panes(
+                &ls,
+                vec![
+                    (lb.clone(), lsp.clone(), Some(ls.clone())),
+                    (rb.clone(), rsp.clone(), Some(rs.clone())),
+                ],
+            );
         });
         action_group.add_action(&action);
     }
@@ -1467,43 +1071,23 @@ pub(super) fn build_diff_view(
         let rl = right_pane.path_label.clone();
         action.connect_activate(move |_, _| {
             let active = av.borrow().clone();
-            let (buf, sp, tp, btn, lbl) = if active == ltv {
-                (lb.clone(), lsp.clone(), ltp.clone(), ls.clone(), ll.clone())
+            if active == ltv {
+                save_as_pane(
+                    lb.clone(),
+                    lsp.clone(),
+                    ls.clone(),
+                    ll.clone(),
+                    Some(ltp.clone()),
+                );
             } else {
-                (rb.clone(), rsp.clone(), rtp.clone(), rs.clone(), rl.clone())
-            };
-            let dialog = gtk4::FileDialog::builder().title("Save As").build();
-            let win = btn
-                .root()
-                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
-            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
-                if let Ok(file) = result
-                    && let Some(path) = file.path()
-                {
-                    let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-                    match fs::write(&path, text.as_str()) {
-                        Ok(()) => {
-                            mark_saving(&path);
-                            btn.set_sensitive(false);
-                            (*sp.borrow_mut()).clone_from(&path);
-                            *tp.borrow_mut() = path.display().to_string();
-                            lbl.set_text(&shortened_path(&path));
-                            lbl.set_tooltip_text(Some(&path.display().to_string()));
-                        }
-                        Err(e) => {
-                            if let Some(win) = btn
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                            {
-                                show_error_dialog(
-                                    &win,
-                                    &format!("Failed to save {}: {e}", path.display()),
-                                );
-                            }
-                        }
-                    }
-                }
-            });
+                save_as_pane(
+                    rb.clone(),
+                    rsp.clone(),
+                    rs.clone(),
+                    rl.clone(),
+                    Some(rtp.clone()),
+                );
+            }
         });
         action_group.add_action(&action);
     }
@@ -1518,14 +1102,10 @@ pub(super) fn build_diff_view(
         let ls = left_pane.save_btn.clone();
         let rs = right_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            if ls.is_sensitive() && !is_blank_path(&lsp.borrow()) {
-                let text = lb.text(&lb.start_iter(), &lb.end_iter(), false);
-                save_file(&lsp.borrow(), text.as_str(), &ls);
-            }
-            if rs.is_sensitive() && !is_blank_path(&rsp.borrow()) {
-                let text = rb.text(&rb.start_iter(), &rb.end_iter(), false);
-                save_file(&rsp.borrow(), text.as_str(), &rs);
-            }
+            save_all_panes(&[
+                (lb.clone(), lsp.clone(), ls.clone()),
+                (rb.clone(), rsp.clone(), rs.clone()),
+            ]);
         });
         action_group.add_action(&action);
     }
@@ -1565,6 +1145,10 @@ pub(super) fn build_diff_view(
                         Some("save-as")
                     } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
                         Some("save-all")
+                    } else if cfg!(target_os = "macos")
+                        && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
+                    {
+                        Some("find-replace")
                     } else {
                         None
                     }
@@ -1578,7 +1162,9 @@ pub(super) fn build_diff_view(
                     Some("next-chunk")
                 } else if key == gtk4::gdk::Key::f || key == gtk4::gdk::Key::F {
                     Some("find")
-                } else if key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H {
+                } else if !cfg!(target_os = "macos")
+                    && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
+                {
                     Some("find-replace")
                 } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
                     Some("go-to-line")
@@ -1610,6 +1196,24 @@ pub(super) fn build_diff_view(
         tv.add_controller(key_ctl);
     }
 
+    // ── Escape on the widget level closes find bar even when no pane has focus ──
+    {
+        let key_ctl = EventControllerKey::new();
+        let fr = find_revealer.clone();
+        let lb = left_buf.clone();
+        let rb = right_buf.clone();
+        key_ctl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Escape && fr.is_child_revealed() {
+                fr.set_reveal_child(false);
+                clear_search_tags(&lb);
+                clear_search_tags(&rb);
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        widget.add_controller(key_ctl);
+    }
+
     DiffViewResult {
         widget,
         left_text_view: left_pane.text_view,
@@ -1636,6 +1240,17 @@ pub(super) fn open_file_diff(
     right_dir: &str,
     settings: &Rc<RefCell<Settings>>,
 ) {
+    // Switch to existing tab if this file is already open
+    for tab in open_tabs.borrow().iter() {
+        if tab.rel_path() == rel_path {
+            let page = notebook.page_num(tab.widget());
+            if let Some(n) = page {
+                notebook.set_current_page(Some(n));
+            }
+            return;
+        }
+    }
+
     let left_path = Path::new(left_dir).join(rel_path);
     let right_path = Path::new(right_dir).join(rel_path);
 
@@ -1645,16 +1260,20 @@ pub(super) fn open_file_diff(
 
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    open_tabs.borrow_mut().push(FileTab {
+    open_tabs.borrow_mut().push(FileTab::Diff {
         id: tab_id,
         rel_path: rel_path.to_string(),
         widget: dv.widget.clone(),
-        left_path: dv.left_tab_path,
-        right_path: dv.right_tab_path,
-        left_buf: dv.left_buf,
-        right_buf: dv.right_buf,
-        left_save: dv.left_save,
-        right_save: dv.right_save,
+        left: PaneInfo {
+            path: dv.left_tab_path,
+            buf: dv.left_buf,
+            save: dv.left_save,
+        },
+        right: PaneInfo {
+            path: dv.right_tab_path,
+            buf: dv.right_buf,
+            save: dv.right_save,
+        },
     });
 
     // Tab label
@@ -1720,7 +1339,7 @@ pub(super) fn open_file_diff(
                     close_notebook_tab(&win, &nb, &tabs, n);
                 } else {
                     nb.remove_page(Some(n));
-                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
                 }
             }
         });
@@ -1753,16 +1372,20 @@ pub(super) fn open_file_diff_paths(
     );
     let tab_title = format!("{left_name} — {right_name}");
 
-    open_tabs.borrow_mut().push(FileTab {
+    open_tabs.borrow_mut().push(FileTab::Diff {
         id: tab_id,
         rel_path: tab_title.clone(),
         widget: dv.widget.clone(),
-        left_path: dv.left_tab_path,
-        right_path: dv.right_tab_path,
-        left_buf: dv.left_buf,
-        right_buf: dv.right_buf,
-        left_save: dv.left_save,
-        right_save: dv.right_save,
+        left: PaneInfo {
+            path: dv.left_tab_path,
+            buf: dv.left_buf,
+            save: dv.left_save,
+        },
+        right: PaneInfo {
+            path: dv.right_tab_path,
+            buf: dv.right_buf,
+            save: dv.right_save,
+        },
     });
 
     let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
@@ -1812,7 +1435,7 @@ pub(super) fn open_file_diff_paths(
                     close_notebook_tab(&win, &nb, &tabs, n);
                 } else {
                     nb.remove_page(Some(n));
-                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
                 }
             }
         });
@@ -1833,16 +1456,20 @@ pub(super) fn open_blank_diff(
 
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    open_tabs.borrow_mut().push(FileTab {
+    open_tabs.borrow_mut().push(FileTab::Diff {
         id: tab_id,
         rel_path: "Blank Comparison".to_string(),
         widget: dv.widget.clone(),
-        left_path: dv.left_tab_path,
-        right_path: dv.right_tab_path,
-        left_buf: dv.left_buf,
-        right_buf: dv.right_buf,
-        left_save: dv.left_save,
-        right_save: dv.right_save,
+        left: PaneInfo {
+            path: dv.left_tab_path,
+            buf: dv.left_buf,
+            save: dv.left_save,
+        },
+        right: PaneInfo {
+            path: dv.right_tab_path,
+            buf: dv.right_buf,
+            save: dv.right_save,
+        },
     });
 
     let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
@@ -1873,7 +1500,7 @@ pub(super) fn open_blank_diff(
                     close_notebook_tab(&win, &nb, &tabs, n);
                 } else {
                     nb.remove_page(Some(n));
-                    tabs.borrow_mut().retain(|t| t.id != tab_id);
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
                 }
             }
         });

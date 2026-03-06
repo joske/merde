@@ -8,7 +8,10 @@ pub(super) struct MergeViewResult {
     pub(super) left_buf: TextBuffer,
     pub(super) middle_buf: TextBuffer,
     pub(super) right_buf: TextBuffer,
+    pub(super) middle_view: TextView,
     pub(super) middle_save: Button,
+    pub(super) middle_save_path: Rc<RefCell<PathBuf>>,
+    pub(super) middle_tab_path: Rc<RefCell<String>>,
     pub(super) action_group: gio::SimpleActionGroup,
 }
 
@@ -286,6 +289,89 @@ fn find_conflict_markers(buf: &TextBuffer) -> Vec<usize> {
 fn conflict_at_cursor(buf: &TextBuffer, cursor_line: usize) -> Option<usize> {
     let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
     super::merge_state::conflict_at_cursor(&text, cursor_line)
+}
+
+/// Find the next/prev navigation target on a side pane, treating each conflict
+/// band as a single entry.  Returns the chunk index in `my_chunks`.
+fn side_nav_find(
+    my_chunks: &[DiffChunk],
+    other_chunks: &[DiffChunk],
+    side: Side,
+    cl: usize,
+    direction: i32,
+    wrap: bool,
+) -> Option<usize> {
+    let merged = merged_gutter_chunks(my_chunks, other_chunks, side);
+    // Build navigation targets: (side_start, first_chunk_idx) for each merged
+    // non-equal entry.  Conflict bands get one entry using the band start and
+    // the first non-equal original chunk index inside them.
+    let targets: Vec<(usize, usize)> = merged
+        .iter()
+        .filter_map(|(mc, _is_cfl)| {
+            if mc.tag == DiffTag::Equal {
+                return None;
+            }
+            let band_start = if side == Side::A {
+                mc.start_a
+            } else {
+                mc.start_b
+            };
+            let band_end = if side == Side::A { mc.end_a } else { mc.end_b };
+            // Find the first non-equal original chunk whose side range falls
+            // within this merged band.
+            let first_idx = my_chunks.iter().enumerate().find_map(|(i, c)| {
+                if c.tag == DiffTag::Equal {
+                    return None;
+                }
+                let (cs, ce) = if side == Side::A {
+                    (c.start_a, c.end_a)
+                } else {
+                    (c.start_b, c.end_b)
+                };
+                if cs >= band_start && ce <= band_end {
+                    Some(i)
+                } else {
+                    None
+                }
+            })?;
+            Some((band_start, first_idx))
+        })
+        .collect();
+
+    let next = if direction > 0 {
+        targets
+            .iter()
+            .find(|(s, _)| *s > cl)
+            .or(if wrap { targets.first() } else { None })
+    } else {
+        targets
+            .iter()
+            .rev()
+            .find(|(s, _)| *s < cl)
+            .or(if wrap { targets.last() } else { None })
+    };
+    next.map(|&(_, idx)| idx)
+}
+
+/// If the cursor is inside a conflict region on the middle pane, adjust the
+/// cursor line to the region boundary so navigation skips the entire conflict.
+fn adjust_cl_for_middle_conflict(
+    cl: usize,
+    left_chunks: &[DiffChunk],
+    right_chunks: &[DiffChunk],
+    direction: i32,
+) -> usize {
+    let regions = middle_conflict_regions(left_chunks, right_chunks);
+    for &(s, e) in &regions {
+        if cl >= s && cl < e {
+            return if direction > 0 {
+                e.saturating_sub(1)
+            } else {
+                s
+            };
+        }
+    }
+    cl
 }
 
 pub(super) fn build_merge_view(
@@ -657,6 +743,9 @@ pub(super) fn build_merge_view(
 
     // ── Toolbar with chunk navigation ───────────────────────────
     let current_chunk: Rc<Cell<Option<(usize, bool)>>> = Rc::new(Cell::new(None));
+    // Guard: set to true while navigate_merge_chunk is placing cursors so that
+    // cursor_position_notify handlers don't overwrite current_chunk.
+    let navigating: Rc<Cell<bool>> = Rc::new(Cell::new(false));
 
     // ── Filler overlay drawing (3-way) ──────────────────────────
     {
@@ -670,9 +759,29 @@ pub(super) fn build_merge_view(
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
                 // Left pane shows a-side of left_chunks
-                let cur_left = cur.get().and_then(|(i, r)| if r { None } else { Some(i) });
-                draw_chunk_backgrounds(cr, w, &ltv, &ls, &lch.borrow(), Side::A, cur_left);
-                draw_side_conflict_strokes(cr, w, &ltv, &ls, &lch.borrow(), &rch.borrow(), Side::A);
+                let cur_val = cur.get();
+                let cur_left = cur_val.and_then(|(i, r)| if r { None } else { Some(i) });
+                let cfl = conflict_flags(&lch.borrow(), Side::B, &rch.borrow(), Side::A);
+                draw_chunk_backgrounds(
+                    cr,
+                    w,
+                    &ltv,
+                    &ls,
+                    &lch.borrow(),
+                    Side::A,
+                    cur_left,
+                    Some(&cfl),
+                );
+                draw_side_conflict_strokes(
+                    cr,
+                    w,
+                    &ltv,
+                    &ls,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                    Side::A,
+                    cur_val,
+                );
                 draw_merge_fillers(
                     cr,
                     w,
@@ -706,9 +815,29 @@ pub(super) fn build_merge_view(
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
                 // Right pane shows b-side of right_chunks
-                let cur_right = cur.get().and_then(|(i, r)| if r { Some(i) } else { None });
-                draw_chunk_backgrounds(cr, w, &rtv, &rs, &rch.borrow(), Side::B, cur_right);
-                draw_side_conflict_strokes(cr, w, &rtv, &rs, &lch.borrow(), &rch.borrow(), Side::B);
+                let cur_val = cur.get();
+                let cur_right = cur_val.and_then(|(i, r)| if r { Some(i) } else { None });
+                let cfr = conflict_flags(&rch.borrow(), Side::A, &lch.borrow(), Side::B);
+                draw_chunk_backgrounds(
+                    cr,
+                    w,
+                    &rtv,
+                    &rs,
+                    &rch.borrow(),
+                    Side::B,
+                    cur_right,
+                    Some(&cfr),
+                );
+                draw_side_conflict_strokes(
+                    cr,
+                    w,
+                    &rtv,
+                    &rs,
+                    &lch.borrow(),
+                    &rch.borrow(),
+                    Side::B,
+                    cur_val,
+                );
                 draw_merge_fillers(
                     cr,
                     w,
@@ -741,13 +870,59 @@ pub(super) fn build_merge_view(
             .filler_overlay
             .set_draw_func(move |_area, cr, w, _h| {
                 let w = w as f64;
-                // Middle pane: b-side of left_chunks, a-side of right_chunks
+                // Middle pane: b-side of left_chunks, a-side of right_chunks.
+                // Conflict chunks are skipped — drawn by draw_conflict_backgrounds.
+                // Draw the non-current side first so the current side's bold
+                // borders are not painted over.
                 let cur_val = cur.get();
                 let cur_left = cur_val.and_then(|(i, r)| if r { None } else { Some(i) });
                 let cur_right = cur_val.and_then(|(i, r)| if r { Some(i) } else { None });
-                draw_chunk_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), Side::B, cur_left);
-                draw_chunk_backgrounds(cr, w, &mtv, &ms, &rch.borrow(), Side::A, cur_right);
-                draw_conflict_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), &rch.borrow());
+                let cfl = conflict_flags(&lch.borrow(), Side::B, &rch.borrow(), Side::A);
+                let cfr = conflict_flags(&rch.borrow(), Side::A, &lch.borrow(), Side::B);
+                if cur_right.is_some() {
+                    draw_chunk_backgrounds(
+                        cr,
+                        w,
+                        &mtv,
+                        &ms,
+                        &lch.borrow(),
+                        Side::B,
+                        cur_left,
+                        Some(&cfl),
+                    );
+                    draw_chunk_backgrounds(
+                        cr,
+                        w,
+                        &mtv,
+                        &ms,
+                        &rch.borrow(),
+                        Side::A,
+                        cur_right,
+                        Some(&cfr),
+                    );
+                } else {
+                    draw_chunk_backgrounds(
+                        cr,
+                        w,
+                        &mtv,
+                        &ms,
+                        &rch.borrow(),
+                        Side::A,
+                        cur_right,
+                        Some(&cfr),
+                    );
+                    draw_chunk_backgrounds(
+                        cr,
+                        w,
+                        &mtv,
+                        &ms,
+                        &lch.borrow(),
+                        Side::B,
+                        cur_left,
+                        Some(&cfl),
+                    );
+                }
+                draw_conflict_backgrounds(cr, w, &mtv, &ms, &lch.borrow(), &rch.borrow(), cur_val);
                 draw_merge_fillers(
                     cr,
                     w,
@@ -798,38 +973,20 @@ pub(super) fn build_merge_view(
         }
     }
 
-    let prev_btn = Button::from_icon_name("go-up-symbolic");
-    prev_btn.set_tooltip_text(Some(&format!(
-        "Previous change (Alt+Up / {}+E)",
-        primary_key_name()
-    )));
+    let (prev_btn, next_btn, nav_box) = build_nav_button_group(
+        &format!("Previous change (Alt+Up / {}+E)", primary_key_name()),
+        &format!("Next change (Alt+Down / {}+D)", primary_key_name()),
+    );
     prev_btn.set_sensitive(false);
-    let next_btn = Button::from_icon_name("go-down-symbolic");
-    next_btn.set_tooltip_text(Some(&format!(
-        "Next change (Alt+Down / {}+D)",
-        primary_key_name()
-    )));
     next_btn.set_sensitive(false);
 
-    let nav_box = GtkBox::new(Orientation::Horizontal, 0);
-    nav_box.add_css_class("linked");
-    nav_box.append(&prev_btn);
-    nav_box.append(&next_btn);
-
     // Conflict navigation buttons
-    let prev_conflict_btn = Button::from_icon_name("go-up-symbolic");
-    prev_conflict_btn.set_tooltip_text(Some(&format!(
-        "Previous conflict ({}+J)",
-        primary_key_name()
-    )));
+    let (prev_conflict_btn, next_conflict_btn, conflict_nav_box) = build_nav_button_group(
+        &format!("Previous conflict ({}+J)", primary_key_name()),
+        &format!("Next conflict ({}+K)", primary_key_name()),
+    );
     prev_conflict_btn.set_sensitive(false);
-    let next_conflict_btn = Button::from_icon_name("go-down-symbolic");
-    next_conflict_btn.set_tooltip_text(Some(&format!("Next conflict ({}+K)", primary_key_name())));
     next_conflict_btn.set_sensitive(false);
-    let conflict_nav_box = GtkBox::new(Orientation::Horizontal, 0);
-    conflict_nav_box.add_css_class("linked");
-    conflict_nav_box.append(&prev_conflict_btn);
-    conflict_nav_box.append(&next_conflict_btn);
 
     let conflict_label = Label::new(None);
     conflict_label.add_css_class("chunk-label");
@@ -844,73 +1001,22 @@ pub(super) fn build_merge_view(
 
     let current_conflict: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
 
-    // Undo/Redo buttons
-    let undo_btn = Button::from_icon_name("edit-undo-symbolic");
-    undo_btn.set_tooltip_text(Some(&format!("Undo ({}+Z)", primary_key_name())));
-    let redo_btn = Button::from_icon_name("edit-redo-symbolic");
-    redo_btn.set_tooltip_text(Some(&format!("Redo ({}+Shift+Z)", primary_key_name())));
-    let undo_redo_box = GtkBox::new(Orientation::Horizontal, 0);
-    undo_redo_box.add_css_class("linked");
-    undo_redo_box.append(&undo_btn);
-    undo_redo_box.append(&redo_btn);
-    {
-        let av = active_view.clone();
-        undo_btn.connect_clicked(move |_| {
-            let buf = av.borrow().buffer();
-            if buf.can_undo() {
-                buf.undo();
-            }
-        });
-    }
-    {
-        let av = active_view.clone();
-        redo_btn.connect_clicked(move |_| {
-            let buf = av.borrow().buffer();
-            if buf.can_redo() {
-                buf.redo();
-            }
-        });
-    }
+    let (_undo_btn, _redo_btn, undo_redo_box) = build_undo_redo_box(&active_view);
 
-    // Go to line entry (hidden by default)
-    let goto_entry = Entry::new();
-    goto_entry.set_placeholder_text(Some("Line #"));
-    goto_entry.set_width_chars(8);
-    goto_entry.add_css_class("goto-entry");
-    goto_entry.set_visible(false);
-    {
-        let av = active_view.clone();
-        let ms = middle_pane.scroll.clone();
-        let entry = goto_entry.clone();
-        goto_entry.connect_activate(move |e| {
-            if let Ok(line) = e.text().trim().parse::<usize>() {
-                let tv = av.borrow().clone();
-                let buf = tv.buffer();
-                let target = line.saturating_sub(1);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, target, &scroll);
-                if let Some(iter) = buf.iter_at_line(target as i32) {
-                    buf.place_cursor(&iter);
-                }
-                tv.grab_focus();
-            }
-            e.set_visible(false);
-            entry.set_text("");
-        });
-    }
-    {
-        let entry = goto_entry.clone();
-        let key_ctl = EventControllerKey::new();
-        key_ctl.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk4::gdk::Key::Escape {
-                entry.set_visible(false);
-                entry.set_text("");
-                return gtk4::glib::Propagation::Stop;
-            }
-            gtk4::glib::Propagation::Proceed
-        });
-        goto_entry.add_controller(key_ctl);
-    }
+    // ── Find bar (shared helper) ──────────────────────────────────
+    let action_group = gio::SimpleActionGroup::new();
+    let find = build_find_bar(
+        &action_group,
+        &active_view,
+        &middle_pane.scroll,
+        &[
+            (left_pane.text_view.clone(), left_buf.clone()),
+            (middle_pane.text_view.clone(), middle_buf.clone()),
+            (right_pane.text_view.clone(), right_buf.clone()),
+        ],
+    );
+    let find_revealer = find.revealer;
+    let goto_entry = find.goto_entry;
 
     let toolbar = GtkBox::new(Orientation::Horizontal, 8);
     toolbar.set_margin_start(6);
@@ -918,16 +1024,8 @@ pub(super) fn build_merge_view(
     toolbar.set_margin_top(4);
     toolbar.set_margin_bottom(4);
     // Text filter toggles
-    let blank_toggle = ToggleButton::with_label("Blanks");
-    blank_toggle.set_tooltip_text(Some("Ignore blank lines"));
-    blank_toggle.set_active(ignore_blanks.get());
-    let ws_toggle = ToggleButton::with_label("Spaces");
-    ws_toggle.set_tooltip_text(Some("Ignore whitespace differences"));
-    ws_toggle.set_active(ignore_whitespace.get());
-    let filter_box = GtkBox::new(Orientation::Horizontal, 0);
-    filter_box.add_css_class("linked");
-    filter_box.append(&blank_toggle);
-    filter_box.append(&ws_toggle);
+    let (blank_toggle, ws_toggle, filter_box) =
+        build_filter_toggles(ignore_blanks.get(), ignore_whitespace.get());
 
     let merge_prefs_btn = Button::from_icon_name("preferences-system-symbolic");
     merge_prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
@@ -947,6 +1045,7 @@ pub(super) fn build_merge_view(
     let navigate_merge_chunk = |lch: &[DiffChunk],
                                 rch: &[DiffChunk],
                                 cur: &Rc<Cell<Option<(usize, bool)>>>,
+                                nav_guard: &Rc<Cell<bool>>,
                                 direction: i32,
                                 ltv: &TextView,
                                 lb: &TextBuffer,
@@ -963,46 +1062,16 @@ pub(super) fn build_merge_view(
                                 active: &TextView,
                                 wrap: bool| {
         // Search the active pane's own chunks in its own coordinates.
+        // For conflict bands (multiple chunks merged into one visual block),
+        // use merged_gutter_chunks so the entire band counts as one
+        // navigation target, preventing stepping through individual chunks.
         let cl = cursor_line_from_view(active);
         let found: Option<(usize, bool)> = if active == ltv {
-            let ne: Vec<usize> = lch
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.tag != DiffTag::Equal)
-                .map(|(i, _)| i)
-                .collect();
-            let next = if direction > 0 {
-                ne.iter()
-                    .find(|&&i| lch[i].start_a > cl)
-                    .or(if wrap { ne.first() } else { None })
-            } else {
-                ne.iter().rev().find(|&&i| lch[i].start_a < cl).or(if wrap {
-                    ne.last()
-                } else {
-                    None
-                })
-            };
-            next.map(|&idx| (idx, false))
+            side_nav_find(lch, rch, Side::A, cl, direction, wrap).map(|i| (i, false))
         } else if active == rtv {
-            let ne: Vec<usize> = rch
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| c.tag != DiffTag::Equal)
-                .map(|(i, _)| i)
-                .collect();
-            let next = if direction > 0 {
-                ne.iter()
-                    .find(|&&i| rch[i].start_b > cl)
-                    .or(if wrap { ne.first() } else { None })
-            } else {
-                ne.iter().rev().find(|&&i| rch[i].start_b < cl).or(if wrap {
-                    ne.last()
-                } else {
-                    None
-                })
-            };
-            next.map(|&idx| (idx, true))
+            side_nav_find(rch, lch, Side::B, cl, direction, wrap).map(|i| (i, true))
         } else {
+            let cl = adjust_cl_for_middle_conflict(cl, lch, rch, direction);
             let all = merge_change_indices(lch, rch);
             let middle_line = |&(idx, is_right): &(usize, bool)| -> usize {
                 if is_right {
@@ -1025,27 +1094,31 @@ pub(super) fn build_merge_view(
             }
         };
         if let Some((idx, is_right)) = found {
+            nav_guard.set(true);
             if is_right {
                 // right_chunks: A = middle, B = right
                 let chunk = &rch[idx];
                 scroll_to_line(mtv, mb, chunk.start_a, ms);
                 scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
-                place_cursor_at_line(mb, chunk.start_a);
-                place_cursor_at_line(rb, chunk.start_b);
-                // Left pane: no corresponding line — just scroll to middle line
-                scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
+                // Only place cursor in active pane; scroll sync handles left
+                if active == rtv {
+                    place_cursor_at_line(rb, chunk.start_b);
+                } else {
+                    place_cursor_at_line(mb, chunk.start_a);
+                }
             } else {
                 // left_chunks: A = left, B = middle
                 let chunk = &lch[idx];
                 scroll_to_line(mtv, mb, chunk.start_b, ms);
                 scroll_to_line(ltv, lb, chunk.start_a, l_scroll);
-                place_cursor_at_line(mb, chunk.start_b);
-                place_cursor_at_line(lb, chunk.start_a);
-                // Right pane: no corresponding line — just scroll to middle line
-                scroll_to_line(rtv, rb, chunk.start_b, r_scroll);
+                // Only place cursor in active pane; scroll sync handles right
+                if active == ltv {
+                    place_cursor_at_line(lb, chunk.start_a);
+                } else {
+                    place_cursor_at_line(mb, chunk.start_b);
+                }
             }
-            // Set current_chunk AFTER placing cursors, because cursor_position_notify
-            // handlers may overwrite it (e.g. for Insert chunks with zero-length ranges).
+            nav_guard.set(false);
             cur.set(Some((idx, is_right)));
             lf.queue_draw();
             mf.queue_draw();
@@ -1148,11 +1221,13 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pb = prev_btn.clone();
         let nb = next_btn.clone();
+        let ng = navigating.clone();
         prev_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
+                &ng,
                 -1,
                 &ltv,
                 &lb,
@@ -1210,11 +1285,13 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pb = prev_btn.clone();
         let nb = next_btn.clone();
+        let ng = navigating.clone();
         next_btn.connect_clicked(move |_| {
             nav(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
+                &ng,
                 1,
                 &ltv,
                 &lb,
@@ -1489,17 +1566,14 @@ pub(super) fn build_merge_view(
         right_chunk_map.add_controller(gesture);
     }
 
-    // Redraw chunk maps on scroll
-    {
+    // Redraw chunk maps on any scroll change
+    for scroll in [&left_pane.scroll, &middle_pane.scroll, &right_pane.scroll] {
         let lcm = left_chunk_map.clone();
         let rcm = right_chunk_map.clone();
-        middle_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lcm.queue_draw();
-                rcm.queue_draw();
-            });
+        scroll.vadjustment().connect_value_changed(move |_| {
+            lcm.queue_draw();
+            rcm.queue_draw();
+        });
     }
 
     // Re-diff on any buffer change, and update all visuals when diff completes
@@ -1754,14 +1828,65 @@ pub(super) fn build_merge_view(
             let st = settings.clone();
             let my_tv = tv.clone();
             let sens = merge_nav_sensitivity;
+            let lf = left_pane.filler_overlay.clone();
+            let mf = middle_pane.filler_overlay.clone();
+            let rf = right_pane.filler_overlay.clone();
+            let lg = left_gutter.clone();
+            let rg = right_gutter.clone();
+            let ng = navigating.clone();
             buf.connect_cursor_position_notify(move |_| {
+                if ng.get() {
+                    return;
+                }
                 if av.borrow().clone() != my_tv {
                     return;
                 }
                 let chunks = if is_right { rch.borrow() } else { lch.borrow() };
                 let cursor_line = cursor_line_from_view(&my_tv);
-                let at = diff_state::chunk_at_cursor(&chunks, cursor_line, side);
-                cur.set(at.map(|idx| (idx, is_right)));
+                let at = diff_state::chunk_at_cursor(&chunks, cursor_line, side).or_else(|| {
+                    // Fallback for conflict regions: cursor may be on a
+                    // zero-length chunk or an equal line absorbed into a
+                    // conflict band.  Use merged_gutter_chunks to find the
+                    // conflict band, then pick its first non-equal chunk.
+                    let other = if is_right {
+                        &*lch.borrow()
+                    } else {
+                        &*rch.borrow()
+                    };
+                    let merged = merged_gutter_chunks(&chunks, other, side);
+                    for (mc, is_cfl) in &merged {
+                        if !is_cfl {
+                            continue;
+                        }
+                        let (band_s, band_e) = if side == Side::A {
+                            (mc.start_a, mc.end_a)
+                        } else {
+                            (mc.start_b, mc.end_b)
+                        };
+                        if cursor_line >= band_s && cursor_line < band_e {
+                            // Find the first non-equal chunk inside this band.
+                            return chunks.iter().enumerate().find_map(|(i, c)| {
+                                if c.tag == DiffTag::Equal {
+                                    return None;
+                                }
+                                let (cs, ce) = if side == Side::A {
+                                    (c.start_a, c.end_a)
+                                } else {
+                                    (c.start_b, c.end_b)
+                                };
+                                if cs >= band_s && ce <= band_e {
+                                    Some(i)
+                                } else {
+                                    None
+                                }
+                            });
+                        }
+                    }
+                    None
+                });
+                let prev_at = cur.get();
+                let new_at = at.map(|idx| (idx, is_right));
+                cur.set(new_at);
                 let all = merge_change_indices(&lch.borrow(), &rch.borrow());
                 let total = all.len();
                 if total == 0 {
@@ -1786,6 +1911,13 @@ pub(super) fn build_merge_view(
                     &rtv,
                     wrap,
                 );
+                if new_at != prev_at {
+                    lf.queue_draw();
+                    mf.queue_draw();
+                    rf.queue_draw();
+                    lg.queue_draw();
+                    rg.queue_draw();
+                }
             });
         };
         connect_side_cursor(&left_buf, &left_pane.text_view, Side::A, false);
@@ -1811,7 +1943,16 @@ pub(super) fn build_merge_view(
             let st = settings.clone();
             let sens = merge_nav_sensitivity;
             let csens = conflict_nav_sensitivity;
+            let lf = left_pane.filler_overlay.clone();
+            let mf = middle_pane.filler_overlay.clone();
+            let rf = right_pane.filler_overlay.clone();
+            let lg = left_gutter.clone();
+            let rg = right_gutter.clone();
+            let ng = navigating.clone();
             middle_buf.connect_cursor_position_notify(move |_| {
+                if ng.get() {
+                    return;
+                }
                 if av.borrow().clone() != mtv {
                     return;
                 }
@@ -1822,7 +1963,47 @@ pub(super) fn build_merge_view(
                 let right_at = diff_state::chunk_at_cursor(&rch.borrow(), cursor_line, Side::A);
                 let at = left_at
                     .map(|idx| (idx, false))
-                    .or_else(|| right_at.map(|idx| (idx, true)));
+                    .or_else(|| right_at.map(|idx| (idx, true)))
+                    .or_else(|| {
+                        // Fallback: cursor may be on an equal/zero-length line
+                        // inside a conflict region on the middle pane.
+                        let regions = middle_conflict_regions(&lch.borrow(), &rch.borrow());
+                        if regions
+                            .iter()
+                            .any(|&(s, e)| cursor_line >= s && cursor_line < e)
+                        {
+                            // Pick the first left conflict chunk whose middle
+                            // projection includes or adjoins cursor_line.
+                            lch.borrow()
+                                .iter()
+                                .enumerate()
+                                .find_map(|(i, c)| {
+                                    if c.tag == DiffTag::Equal {
+                                        return None;
+                                    }
+                                    if c.start_b <= cursor_line && cursor_line <= c.end_b {
+                                        Some((i, false))
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .or_else(|| {
+                                    rch.borrow().iter().enumerate().find_map(|(i, c)| {
+                                        if c.tag == DiffTag::Equal {
+                                            return None;
+                                        }
+                                        if c.start_a <= cursor_line && cursor_line <= c.end_a {
+                                            Some((i, true))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                })
+                        } else {
+                            None
+                        }
+                    });
+                let prev_at = cur.get();
                 cur.set(at);
                 update_merge_label(&lbl, &lch.borrow(), &rch.borrow(), at);
 
@@ -1843,233 +2024,16 @@ pub(super) fn build_merge_view(
                 ccur.set(in_conflict);
                 update_conflict_label(&clbl, &mb, in_conflict);
                 csens(&pcb, &ncb, &mb, &mtv, wrap);
+
+                if at != prev_at {
+                    lf.queue_draw();
+                    mf.queue_draw();
+                    rf.queue_draw();
+                    lg.queue_draw();
+                    rg.queue_draw();
+                }
             });
         }
-    }
-
-    // ── Find bar for merge view ───────────────────────────────────
-    let find_entry = Entry::new();
-    find_entry.set_placeholder_text(Some(&format!("Find ({}+F)", primary_key_name())));
-    find_entry.set_hexpand(true);
-
-    let replace_entry = Entry::new();
-    replace_entry.set_placeholder_text(Some("Replace"));
-    replace_entry.set_hexpand(true);
-
-    let find_prev_btn = Button::from_icon_name("go-up-symbolic");
-    let find_next_btn = Button::from_icon_name("go-down-symbolic");
-    let match_label = Label::new(None);
-    match_label.add_css_class("chunk-label");
-    let find_close_btn = Button::from_icon_name("window-close-symbolic");
-    find_close_btn.set_has_frame(false);
-
-    let replace_btn = Button::with_label("Replace");
-    let replace_all_btn = Button::with_label("All");
-    let replace_row = GtkBox::new(Orientation::Horizontal, 4);
-    replace_row.set_margin_start(6);
-    replace_row.set_margin_end(6);
-    replace_row.append(&replace_entry);
-    replace_row.append(&replace_btn);
-    replace_row.append(&replace_all_btn);
-    replace_row.set_visible(false);
-
-    let find_nav = GtkBox::new(Orientation::Horizontal, 0);
-    find_nav.add_css_class("linked");
-    find_nav.append(&find_prev_btn);
-    find_nav.append(&find_next_btn);
-
-    let find_row = GtkBox::new(Orientation::Horizontal, 4);
-    find_row.set_margin_start(6);
-    find_row.set_margin_end(6);
-    find_row.append(&find_entry);
-    find_row.append(&find_nav);
-    find_row.append(&match_label);
-    find_row.append(&find_close_btn);
-
-    let find_bar = GtkBox::new(Orientation::Vertical, 2);
-    find_bar.add_css_class("find-bar");
-    find_bar.append(&find_row);
-    find_bar.append(&replace_row);
-
-    let find_revealer = Revealer::new();
-    find_revealer.set_child(Some(&find_bar));
-    find_revealer.set_reveal_child(false);
-    find_revealer.set_transition_type(gtk4::RevealerTransitionType::SlideUp);
-
-    // Search logic
-    {
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let ml = match_label.clone();
-        find_entry.connect_changed(move |e| {
-            let needle = e.text().to_string();
-            let total = highlight_search_matches(&lb, &needle)
-                + highlight_search_matches(&mb, &needle)
-                + highlight_search_matches(&rb, &needle);
-            if needle.is_empty() {
-                ml.set_label("");
-            } else if total == 0 {
-                ml.set_label("No matches");
-            } else {
-                ml.set_label(&format!("{total} matches"));
-            }
-        });
-    }
-
-    // Find next
-    {
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ms = middle_pane.scroll.clone();
-        find_next_btn.connect_clicked(move |_| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Find prev
-    {
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ms = middle_pane.scroll.clone();
-        find_prev_btn.connect_clicked(move |_| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Enter in find entry = find next
-    {
-        let av = active_view.clone();
-        let ms = middle_pane.scroll.clone();
-        find_entry.connect_activate(move |e| {
-            let needle = e.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-    }
-
-    // Replace
-    {
-        let av = active_view.clone();
-        let find_e = find_entry.clone();
-        let repl_e = replace_entry.clone();
-        replace_btn.connect_clicked(move |_| {
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let (sel_start, sel_end) = buf.selection_bounds().unwrap_or_else(|| {
-                let c = buf.iter_at_mark(&buf.get_insert());
-                (c, c)
-            });
-            let selected = buf.text(&sel_start, &sel_end, false).to_string();
-            let needle = find_e.text().to_string();
-            if !needle.is_empty() && selected.to_lowercase() == needle.to_lowercase() {
-                let replacement = repl_e.text().to_string();
-                let mut s = sel_start;
-                let mut e = sel_end;
-                buf.delete(&mut s, &mut e);
-                buf.insert(&mut s, &replacement);
-            }
-        });
-    }
-
-    // Replace all
-    {
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let find_e = find_entry.clone();
-        let repl_e = replace_entry.clone();
-        replace_all_btn.connect_clicked(move |_| {
-            let needle = find_e.text().to_string();
-            let replacement = repl_e.text().to_string();
-            if needle.is_empty() {
-                return;
-            }
-            let needle_lower = needle.to_lowercase();
-            for buf in [&lb, &mb, &rb] {
-                let text = buf
-                    .text(&buf.start_iter(), &buf.end_iter(), false)
-                    .to_string();
-                // Case-insensitive replace to match CASE_INSENSITIVE find
-                let mut new_text = String::with_capacity(text.len());
-                let mut remaining = text.as_str();
-                while let Some(pos) = remaining.to_lowercase().find(&needle_lower) {
-                    new_text.push_str(&remaining[..pos]);
-                    new_text.push_str(&replacement);
-                    remaining = &remaining[(pos + needle.len())..];
-                }
-                new_text.push_str(remaining);
-                if new_text != text {
-                    buf.set_text(&new_text);
-                }
-            }
-        });
-    }
-
-    // Close find bar
-    {
-        let fr = find_revealer.clone();
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        find_close_btn.connect_clicked(move |_| {
-            fr.set_reveal_child(false);
-            clear_search_tags(&lb);
-            clear_search_tags(&mb);
-            clear_search_tags(&rb);
-        });
-    }
-
-    // Escape / F3 in find and replace entries
-    for entry in [&find_entry, &replace_entry] {
-        let fr = find_revealer.clone();
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let fnb = find_next_btn.clone();
-        let fpb = find_prev_btn.clone();
-        let key_ctl = EventControllerKey::new();
-        key_ctl.connect_key_pressed(move |_, key, _, mods| {
-            if key == gtk4::gdk::Key::Escape {
-                fr.set_reveal_child(false);
-                clear_search_tags(&lb);
-                clear_search_tags(&mb);
-                clear_search_tags(&rb);
-                return gtk4::glib::Propagation::Stop;
-            }
-            if key == gtk4::gdk::Key::F3 {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    fpb.emit_clicked();
-                } else {
-                    fnb.emit_clicked();
-                }
-                return gtk4::glib::Propagation::Stop;
-            }
-            gtk4::glib::Propagation::Proceed
-        });
-        entry.add_controller(key_ctl);
     }
 
     // Layout: [chunk_map | left pane | left_gutter | middle pane | right_gutter | right pane | chunk_map]
@@ -2092,8 +2056,7 @@ pub(super) fn build_merge_view(
     widget.append(&diff_row);
     widget.append(&find_revealer);
 
-    // GAction group for keyboard shortcuts
-    let action_group = gio::SimpleActionGroup::new();
+    // Remaining GActions for keyboard shortcuts
     {
         let action = gio::SimpleAction::new("prev-chunk", None);
         let lch = left_chunks.clone();
@@ -2116,11 +2079,13 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pb = prev_btn.clone();
         let nb = next_btn.clone();
+        let ng = navigating.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
+                &ng,
                 -1,
                 &ltv,
                 &lb,
@@ -2173,11 +2138,13 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pb = prev_btn.clone();
         let nb = next_btn.clone();
+        let ng = navigating.clone();
         action.connect_activate(move |_, _| {
             navigate_merge_chunk(
                 &lch.borrow(),
                 &rch.borrow(),
                 &cur,
+                &ng,
                 1,
                 &ltv,
                 &lb,
@@ -2288,81 +2255,6 @@ pub(super) fn build_merge_view(
         });
         action_group.add_action(&action);
     }
-    // Find action (Ctrl+F)
-    {
-        let action = gio::SimpleAction::new("find", None);
-        let fr = find_revealer.clone();
-        let fe = find_entry.clone();
-        let rr = replace_row.clone();
-        action.connect_activate(move |_, _| {
-            rr.set_visible(false);
-            fr.set_reveal_child(true);
-            fe.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-    // Find-replace action (Ctrl+H)
-    {
-        let action = gio::SimpleAction::new("find-replace", None);
-        let fr = find_revealer.clone();
-        let fe = find_entry.clone();
-        let rr = replace_row.clone();
-        action.connect_activate(move |_, _| {
-            rr.set_visible(true);
-            fr.set_reveal_child(true);
-            fe.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-    // Find next (F3)
-    {
-        let action = gio::SimpleAction::new("find-next", None);
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ms = middle_pane.scroll.clone();
-        action.connect_activate(move |_, _| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, true) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-        action_group.add_action(&action);
-    }
-    // Find prev (Shift+F3)
-    {
-        let action = gio::SimpleAction::new("find-prev", None);
-        let av = active_view.clone();
-        let fe = find_entry.clone();
-        let ms = middle_pane.scroll.clone();
-        action.connect_activate(move |_, _| {
-            let needle = fe.text().to_string();
-            let tv = av.borrow().clone();
-            let buf = tv.buffer();
-            let cursor = buf.iter_at_mark(&buf.get_insert());
-            if let Some((start, end)) = find_next_match(&buf, &needle, &cursor, false) {
-                buf.select_range(&start, &end);
-                let scroll = scroll_for_view(&tv, &ms);
-                scroll_to_line(&tv, &buf, start.line() as usize, &scroll);
-            }
-        });
-        action_group.add_action(&action);
-    }
-    // Go to line (Ctrl+L)
-    {
-        let action = gio::SimpleAction::new("go-to-line", None);
-        let ge = goto_entry.clone();
-        action.connect_activate(move |_, _| {
-            ge.set_visible(true);
-            ge.grab_focus();
-        });
-        action_group.add_action(&action);
-    }
-
     // Ctrl+S: save middle pane (only editable pane in merge)
     {
         let action = gio::SimpleAction::new("save", None);
@@ -2389,44 +2281,14 @@ pub(super) fn build_merge_view(
         let rsp = right_pane.save_path.clone();
         let ms = middle_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            let do_reload = {
-                let lb = lb.clone();
-                let mb = mb.clone();
-                let rb = rb.clone();
-                let lsp = lsp.clone();
-                let msp = msp.clone();
-                let rsp = rsp.clone();
-                let ms = ms.clone();
-                move || {
-                    if let Some(lc) = read_file_for_reload(&lsp.borrow()) {
-                        lb.set_text(&lc);
-                    }
-                    if let Some(mc) = read_file_for_reload(&msp.borrow()) {
-                        mb.set_text(&mc);
-                        ms.set_sensitive(false);
-                    }
-                    if let Some(rc) = read_file_for_reload(&rsp.borrow()) {
-                        rb.set_text(&rc);
-                    }
-                }
-            };
-            if ms.is_sensitive() {
-                if let Some(win) = ms
-                    .root()
-                    .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                {
-                    let reload = do_reload;
-                    show_confirm_dialog(
-                        &win,
-                        "Discard Changes?",
-                        "Unsaved changes will be lost. Reload from disk?",
-                        "Reload",
-                        reload,
-                    );
-                }
-            } else {
-                do_reload();
-            }
+            refresh_panes(
+                &ms,
+                vec![
+                    (lb.clone(), lsp.clone(), None),
+                    (mb.clone(), msp.clone(), Some(ms.clone())),
+                    (rb.clone(), rsp.clone(), None),
+                ],
+            );
         });
         action_group.add_action(&action);
     }
@@ -2461,42 +2323,15 @@ pub(super) fn build_merge_view(
         let msp = middle_pane.save_path.clone();
         let ms = middle_pane.save_btn.clone();
         let ml = middle_pane.path_label.clone();
+        let mtp = middle_pane.tab_path.clone();
         action.connect_activate(move |_, _| {
-            let dialog = gtk4::FileDialog::builder().title("Save As").build();
-            let win = ms
-                .root()
-                .and_then(|r| r.downcast::<ApplicationWindow>().ok());
-            let mb = mb.clone();
-            let msp = msp.clone();
-            let ms = ms.clone();
-            let ml = ml.clone();
-            dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
-                if let Ok(file) = result
-                    && let Some(path) = file.path()
-                {
-                    let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
-                    match fs::write(&path, text.as_str()) {
-                        Ok(()) => {
-                            mark_saving(&path);
-                            ms.set_sensitive(false);
-                            (*msp.borrow_mut()).clone_from(&path);
-                            ml.set_text(&shortened_path(&path));
-                            ml.set_tooltip_text(Some(&path.display().to_string()));
-                        }
-                        Err(e) => {
-                            if let Some(win) = ms
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                            {
-                                show_error_dialog(
-                                    &win,
-                                    &format!("Failed to save {}: {e}", path.display()),
-                                );
-                            }
-                        }
-                    }
-                }
-            });
+            save_as_pane(
+                mb.clone(),
+                msp.clone(),
+                ms.clone(),
+                ml.clone(),
+                Some(mtp.clone()),
+            );
         });
         action_group.add_action(&action);
     }
@@ -2508,10 +2343,7 @@ pub(super) fn build_merge_view(
         let msp = middle_pane.save_path.clone();
         let ms = middle_pane.save_btn.clone();
         action.connect_activate(move |_, _| {
-            if ms.is_sensitive() {
-                let text = mb.text(&mb.start_iter(), &mb.end_iter(), false);
-                save_file(&msp.borrow(), text.as_str(), &ms);
-            }
+            save_all_panes(&[(mb.clone(), msp.clone(), ms.clone())]);
         });
         action_group.add_action(&action);
     }
@@ -2602,6 +2434,10 @@ pub(super) fn build_merge_view(
                         Some("save-as")
                     } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
                         Some("save-all")
+                    } else if cfg!(target_os = "macos")
+                        && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
+                    {
+                        Some("find-replace")
                     } else {
                         None
                     }
@@ -2615,7 +2451,9 @@ pub(super) fn build_merge_view(
                     Some("next-chunk")
                 } else if key == gtk4::gdk::Key::f || key == gtk4::gdk::Key::F {
                     Some("find")
-                } else if key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H {
+                } else if !cfg!(target_os = "macos")
+                    && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
+                {
                     Some("find-replace")
                 } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
                     Some("go-to-line")
@@ -2651,12 +2489,35 @@ pub(super) fn build_merge_view(
         tv.add_controller(key_ctl);
     }
 
+    // ── Escape on the widget level closes find bar even when no pane has focus ──
+    {
+        let key_ctl = EventControllerKey::new();
+        let fr = find_revealer.clone();
+        let lb = left_buf.clone();
+        let mb = middle_buf.clone();
+        let rb = right_buf.clone();
+        key_ctl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk4::gdk::Key::Escape && fr.is_child_revealed() {
+                fr.set_reveal_child(false);
+                clear_search_tags(&lb);
+                clear_search_tags(&mb);
+                clear_search_tags(&rb);
+                return gtk4::glib::Propagation::Stop;
+            }
+            gtk4::glib::Propagation::Proceed
+        });
+        widget.add_controller(key_ctl);
+    }
+
     MergeViewResult {
         widget,
         left_buf,
         middle_buf,
         right_buf,
+        middle_view: middle_pane.text_view,
         middle_save: middle_pane.save_btn,
+        middle_save_path: middle_pane.save_path,
+        middle_tab_path: middle_pane.tab_path,
         action_group,
     }
 }
@@ -2672,107 +2533,96 @@ pub(super) fn build_merge_window(
     let mv = build_merge_view(&left_path, &middle_path, &right_path, labels, settings);
 
     // File watcher on all 3 files
-    let merge_watcher_alive = Rc::new(Cell::new(true));
-    let (fs_tx, fs_rx) = mpsc::channel::<()>();
-    let merge_watcher = {
-        use notify::{RecursiveMode, Watcher};
-        let op = middle_path.clone();
-        let mut w =
-            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if res.is_ok() {
-                    let _ = fs_tx.send(());
-                }
-            })
-            .expect("Failed to create file watcher");
-        for p in [&left_path, &op, &right_path] {
-            if let Some(parent) = p.parent() {
-                w.watch(parent, RecursiveMode::NonRecursive).ok();
-            }
+    let watch_paths: Vec<&Path> = [&left_path, &middle_path, &right_path]
+        .iter()
+        .filter_map(|p| p.parent())
+        .collect();
+    let lb = mv.left_buf.clone();
+    let mb = mv.middle_buf.clone();
+    let rb = mv.right_buf.clone();
+    let lp = left_path.clone();
+    let msp = mv.middle_save_path.clone();
+    let rp = right_path.clone();
+    let m_save = mv.middle_save.clone();
+    let loading = Rc::new(Cell::new(false));
+    let dirty = Rc::new(Cell::new(false));
+    let retry_count = Rc::new(Cell::new(0u32));
+    let watched_mid_dir: Rc<RefCell<PathBuf>> = Rc::new(RefCell::new(
+        middle_path.parent().unwrap_or(Path::new("")).to_path_buf(),
+    ));
+    let merge_watcher = start_file_watcher(&watch_paths, false, None, move |fs_dirty| {
+        if fs_dirty {
+            dirty.set(true);
+            retry_count.set(0);
         }
-        w
-    };
+        let mp = msp.borrow().clone();
+        if dirty.get() && !loading.get() && !is_saving(&[&lp, &mp, &rp]) && !m_save.is_sensitive() {
+            dirty.set(false);
+            loading.set(true);
+            let lp2 = lp.clone();
+            let mp2 = mp.clone();
+            let rp2 = rp.clone();
+            let lb2 = lb.clone();
+            let mb2 = mb.clone();
+            let rb2 = rb.clone();
+            let m_save2 = m_save.clone();
+            let loading2 = loading.clone();
+            let dirty2 = dirty.clone();
+            let retry2 = retry_count.clone();
+            gtk4::glib::spawn_future_local(async move {
+                let (left_content, middle_content, right_content) =
+                    gio::spawn_blocking(move || {
+                        (
+                            read_file_for_reload(&lp2),
+                            read_file_for_reload(&mp2),
+                            read_file_for_reload(&rp2),
+                        )
+                    })
+                    .await
+                    .unwrap();
+                loading2.set(false);
+                let (Some(left_content), Some(middle_content), Some(right_content)) =
+                    (left_content, middle_content, right_content)
+                else {
+                    let n = retry2.get() + 1;
+                    retry2.set(n);
+                    if n < 5 {
+                        dirty2.set(true);
+                    } else {
+                        eprintln!("Giving up reload after {n} retries (file unreadable or binary)");
+                    }
+                    return;
+                };
+                let cur_l = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
+                let cur_m = mb2.text(&mb2.start_iter(), &mb2.end_iter(), false);
+                let cur_r = rb2.text(&rb2.start_iter(), &rb2.end_iter(), false);
+                if cur_l.as_str() != left_content
+                    || cur_m.as_str() != middle_content
+                    || cur_r.as_str() != right_content
+                {
+                    lb2.set_text(&left_content);
+                    mb2.set_text(&middle_content);
+                    rb2.set_text(&right_content);
+                    m_save2.set_sensitive(false);
+                }
+            });
+        }
+    });
 
-    // Poll for filesystem changes and reload
+    // Monitor middle save_path: if Save As moved it to a different directory,
+    // tell the watcher to monitor that directory too.
+    let watcher_alive = merge_watcher.alive.clone();
     {
-        let lb = mv.left_buf.clone();
-        let mb = mv.middle_buf.clone();
-        let rb = mv.right_buf.clone();
-        let lp = left_path.clone();
-        let mp = middle_path.clone();
-        let rp = right_path.clone();
-        let m_save = mv.middle_save.clone();
-        let alive = merge_watcher_alive.clone();
-        let loading = Rc::new(Cell::new(false));
-        let dirty = Rc::new(Cell::new(false));
-        let retry_count = Rc::new(Cell::new(0u32));
+        let msp = mv.middle_save_path.clone();
+        let alive = watcher_alive.clone();
         gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
-            let _ = &merge_watcher; // prevent drop; watcher lives until closure is dropped
             if !alive.get() {
                 return gtk4::glib::ControlFlow::Break;
             }
-            while fs_rx.try_recv().is_ok() {
-                dirty.set(true);
-                retry_count.set(0); // new FS event resets the retry counter
-            }
-            if dirty.get()
-                && !loading.get()
-                && !is_saving(&[&lp, &mp, &rp])
-                && !m_save.is_sensitive()
-            {
-                dirty.set(false);
-                loading.set(true);
-                let lp2 = lp.clone();
-                let mp2 = mp.clone();
-                let rp2 = rp.clone();
-                let lb2 = lb.clone();
-                let mb2 = mb.clone();
-                let rb2 = rb.clone();
-                let m_save2 = m_save.clone();
-                let loading2 = loading.clone();
-                let dirty2 = dirty.clone();
-                let retry2 = retry_count.clone();
-                gtk4::glib::spawn_future_local(async move {
-                    let (left_content, middle_content, right_content) =
-                        gio::spawn_blocking(move || {
-                            (
-                                read_file_for_reload(&lp2),
-                                read_file_for_reload(&mp2),
-                                read_file_for_reload(&rp2),
-                            )
-                        })
-                        .await
-                        .unwrap();
-                    loading2.set(false);
-                    // Retry on next tick if any file became binary or unreadable
-                    let (Some(left_content), Some(middle_content), Some(right_content)) =
-                        (left_content, middle_content, right_content)
-                    else {
-                        let n = retry2.get() + 1;
-                        retry2.set(n);
-                        if n < 5 {
-                            dirty2.set(true);
-                        } else {
-                            eprintln!(
-                                "Giving up reload after {n} retries (file unreadable or binary)"
-                            );
-                        }
-                        return;
-                    };
-                    let cur_l = lb2.text(&lb2.start_iter(), &lb2.end_iter(), false);
-                    let cur_m = mb2.text(&mb2.start_iter(), &mb2.end_iter(), false);
-                    let cur_r = rb2.text(&rb2.start_iter(), &rb2.end_iter(), false);
-                    if cur_l.as_str() != left_content
-                        || cur_m.as_str() != middle_content
-                        || cur_r.as_str() != right_content
-                    {
-                        // set_text triggers connect_changed which schedules
-                        // refresh_merge_diffs with the current filter state.
-                        lb2.set_text(&left_content);
-                        mb2.set_text(&middle_content);
-                        rb2.set_text(&right_content);
-                        m_save2.set_sensitive(false);
-                    }
-                });
+            let cur_dir = msp.borrow().parent().unwrap_or(Path::new("")).to_path_buf();
+            if cur_dir != *watched_mid_dir.borrow() {
+                merge_watcher.watch(&cur_dir);
+                (*watched_mid_dir.borrow_mut()).clone_from(&cur_dir);
             }
             gtk4::glib::ControlFlow::Continue
         });
@@ -2793,127 +2643,38 @@ pub(super) fn build_merge_window(
     );
     let title = format!("{left_name} — {middle_name} — {right_name}");
 
-    // ── Notebook (tabs) ────────────────────────────────────────────
-    let notebook = Notebook::new();
-    notebook.set_scrollable(true);
+    // ── Window via shared helper ─────────────────────────────────────
+    let AppWindow {
+        window,
+        notebook,
+        open_tabs,
+    } = build_app_window(app, settings, 1200, 600, true);
+
+    mv.widget
+        .insert_action_group("diff", Some(&mv.action_group));
     notebook.append_page(&mv.widget, Some(&Label::new(Some(&title))));
 
-    // Track open file tabs (New Comparison tabs that open file diffs)
-    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
-
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title("Mergers")
-        .default_width(1200)
-        .default_height(600)
-        .child(&notebook)
-        .build();
-    window.insert_action_group("diff", Some(&mv.action_group));
-
-    // Preferences action
-    let win_actions = gio::SimpleActionGroup::new();
+    // Register merge tab in open_tabs so the shared close_request handler
+    // picks up the middle_save unsaved state automatically.
     {
-        let action = gio::SimpleAction::new("prefs", None);
-        let w = window.clone();
-        let st = settings.clone();
-        action.connect_activate(move |_, _| {
-            show_preferences(&w, &st);
+        let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        open_tabs.borrow_mut().push(FileTab::Merge {
+            id: tab_id,
+            rel_path: title,
+            widget: mv.widget.clone(),
+            middle: PaneInfo {
+                path: mv.middle_tab_path,
+                buf: mv.middle_buf.clone(),
+                save: mv.middle_save,
+            },
         });
-        win_actions.add_action(&action);
-    }
-    // Close-tab action (Ctrl+W) — close current tab or window
-    {
-        let action = gio::SimpleAction::new("close-tab", None);
-        let nb = notebook.clone();
-        let w = window.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| match nb.current_page() {
-            // Page 0 is the merge view — close entire window
-            Some(0) | None => w.close(),
-            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
-        });
-        win_actions.add_action(&action);
-    }
-    // New comparison (Ctrl+N)
-    {
-        let action = gio::SimpleAction::new("new-comparison", None);
-        let nb = notebook.clone();
-        let st = settings.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| {
-            build_new_comparison_tab(&nb, &st, &tabs);
-        });
-        win_actions.add_action(&action);
-    }
-    add_tab_navigation_actions(&win_actions, &notebook);
-    window.insert_action_group("win", Some(&win_actions));
-    add_tab_navigation_keys(&window);
-
-    // Unsaved-changes guard on window close button
-    {
-        let ms = mv.middle_save.clone();
-        let save_path = middle_path.display().to_string();
-        let tabs = open_tabs.clone();
-        window.connect_close_request(move |w| {
-            // Collect unsaved from the merge tab's middle save button
-            let mut unsaved: Vec<(String, Button)> = Vec::new();
-            if ms.is_sensitive() {
-                unsaved.push((save_path.clone(), ms.clone()));
-            }
-            // Also collect from any file diff tabs opened via New Comparison
-            for t in tabs.borrow().iter() {
-                if t.left_save.is_sensitive() {
-                    let path = t.left_path.borrow();
-                    let label = if path.is_empty() {
-                        "Untitled".to_string()
-                    } else {
-                        path.clone()
-                    };
-                    unsaved.push((label, t.left_save.clone()));
-                }
-                if t.right_save.is_sensitive() {
-                    let path = t.right_path.borrow();
-                    let label = if path.is_empty() {
-                        "Untitled".to_string()
-                    } else {
-                        path.clone()
-                    };
-                    unsaved.push((label, t.right_save.clone()));
-                }
-            }
-            if unsaved.is_empty() {
-                return gtk4::glib::Propagation::Proceed;
-            }
-            let w2 = w.clone();
-            confirm_unsaved_dialog(w, unsaved, move || w2.close());
-            gtk4::glib::Propagation::Stop
-        });
-    }
-
-    if let Some(gtk_app) = window.application() {
-        set_platform_accels(&gtk_app, "diff.prev-chunk", &["<Alt>Up", "<Ctrl>e"]);
-        set_platform_accels(&gtk_app, "diff.next-chunk", &["<Alt>Down", "<Ctrl>d"]);
-        set_platform_accels(&gtk_app, "diff.prev-conflict", &["<Ctrl>j"]);
-        set_platform_accels(&gtk_app, "diff.next-conflict", &["<Ctrl>k"]);
-        set_platform_accels(&gtk_app, "diff.find", &["<Ctrl>f"]);
-        set_platform_accels(&gtk_app, "diff.find-replace", &["<Ctrl>h"]);
-        gtk_app.set_accels_for_action("diff.find-next", &["F3"]);
-        gtk_app.set_accels_for_action("diff.find-prev", &["<Shift>F3"]);
-        set_platform_accels(&gtk_app, "diff.go-to-line", &["<Ctrl>l"]);
-        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
-        set_platform_accels(&gtk_app, "diff.refresh", &["<Ctrl>r"]);
-        set_platform_accels(&gtk_app, "diff.open-externally", &["<Ctrl><Shift>o"]);
-        set_platform_accels(&gtk_app, "diff.save-as", &["<Ctrl><Shift>s"]);
-        set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
-        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
-        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
-        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
     }
 
     window.connect_destroy(move |_| {
-        merge_watcher_alive.set(false);
+        watcher_alive.set(false);
     });
 
+    mv.middle_view.grab_focus();
     window.present();
 }
 

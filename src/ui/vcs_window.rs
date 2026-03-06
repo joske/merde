@@ -10,6 +10,7 @@ pub fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str) -> String 
         crate::vcs::VcsStatus::Deleted => "D",
         crate::vcs::VcsStatus::Renamed => "R",
         crate::vcs::VcsStatus::Untracked => "U",
+        crate::vcs::VcsStatus::Conflict => "C",
     };
     format!("{code}{SEP}{rel_path}")
 }
@@ -25,6 +26,7 @@ pub fn vcs_status_info(code: &str) -> (&'static str, &'static str) {
         "D" => ("Deleted", "diff-deleted"),
         "R" => ("Renamed", "diff-changed"),
         "U" => ("Untracked", "diff-inserted"),
+        "C" => ("Conflict", "diff-conflict"),
         _ => ("", ""),
     }
 }
@@ -48,6 +50,14 @@ pub enum VcsDiffPlan {
         temp_deleted: PathBuf,
         content: String,
     },
+    /// 3-way merge for conflict: ours (left), working copy (middle), theirs (right).
+    ConflictMerge {
+        temp_ours: PathBuf,
+        ours_content: String,
+        working: PathBuf,
+        temp_theirs: PathBuf,
+        theirs_content: String,
+    },
 }
 
 pub fn plan_vcs_diff(
@@ -68,6 +78,17 @@ pub fn plan_vcs_diff(
     let working_path = repo_root.join(rel_path);
 
     match status_code {
+        "C" => {
+            let ours = crate::vcs::stage_content(repo_root, rel_path, 2).unwrap_or_default();
+            let theirs = crate::vcs::stage_content(repo_root, rel_path, 3).unwrap_or_default();
+            Some(VcsDiffPlan::ConflictMerge {
+                temp_ours: temp_dir.join(format!("__ours__{rel_path}")),
+                ours_content: ours,
+                working: working_path,
+                temp_theirs: temp_dir.join(format!("__theirs__{rel_path}")),
+                theirs_content: theirs,
+            })
+        }
         "M" | "R" => {
             let content = crate::vcs::head_content(repo_root, rel_path).unwrap_or_default();
             Some(VcsDiffPlan::WithWorking {
@@ -109,7 +130,12 @@ fn make_vcs_status_factory() -> SignalListItemFactory {
         let (text, css) = vcs_status_info(code);
 
         label.set_label(text);
-        for cls in &["diff-changed", "diff-deleted", "diff-inserted"] {
+        for cls in &[
+            "diff-changed",
+            "diff-deleted",
+            "diff-inserted",
+            "diff-conflict",
+        ] {
             label.remove_css_class(cls);
         }
         if !css.is_empty() {
@@ -145,7 +171,12 @@ fn make_vcs_path_factory() -> SignalListItemFactory {
 
         icon.set_icon_name(Some("text-x-generic-symbolic"));
         label.set_label(path);
-        for cls in &["diff-changed", "diff-deleted", "diff-inserted"] {
+        for cls in &[
+            "diff-changed",
+            "diff-deleted",
+            "diff-inserted",
+            "diff-conflict",
+        ] {
             label.remove_css_class(cls);
         }
         if !css.is_empty() {
@@ -168,8 +199,8 @@ fn open_vcs_diff(
     if let Some(page) = open_tabs
         .borrow()
         .iter()
-        .find(|t| t.rel_path == rel_path)
-        .and_then(|t| notebook.page_num(&t.widget))
+        .find(|t| t.rel_path() == rel_path)
+        .and_then(|t| notebook.page_num(t.widget()))
     {
         notebook.set_current_page(Some(page));
         return;
@@ -179,62 +210,6 @@ fn open_vcs_diff(
         return;
     };
 
-    let (left_path, right_path) = match plan {
-        VcsDiffPlan::WithWorking {
-            temp_head,
-            working,
-            content,
-        } => {
-            if let Some(parent) = temp_head.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(&temp_head, content);
-            (temp_head, working)
-        }
-        VcsDiffPlan::EmptyWithWorking {
-            temp_empty,
-            working,
-        } => {
-            if let Some(parent) = temp_empty.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(&temp_empty, "");
-            (temp_empty, working)
-        }
-        VcsDiffPlan::WithDeleted {
-            temp_head,
-            temp_deleted,
-            content,
-        } => {
-            for p in [&temp_head, &temp_deleted] {
-                if let Some(parent) = p.parent() {
-                    let _ = fs::create_dir_all(parent);
-                }
-            }
-            let _ = fs::write(&temp_head, content);
-            let _ = fs::write(&temp_deleted, "");
-            (temp_head, temp_deleted)
-        }
-    };
-
-    let labels = vec![format!("HEAD: {rel_path}"), format!("Working: {rel_path}")];
-    let dv = build_diff_view(&left_path, &right_path, &labels, settings);
-    dv.widget
-        .insert_action_group("diff", Some(&dv.action_group));
-
-    let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    open_tabs.borrow_mut().push(FileTab {
-        id: tab_id,
-        rel_path: rel_path.to_string(),
-        widget: dv.widget.clone(),
-        left_path: dv.left_tab_path,
-        right_path: dv.right_tab_path,
-        left_buf: dv.left_buf,
-        right_buf: dv.right_buf,
-        left_save: dv.left_save,
-        right_save: dv.right_save,
-    });
-
     let (status_text, _) = vcs_status_info(status_code);
     let file_name = Path::new(rel_path).file_name().map_or_else(
         || rel_path.to_string(),
@@ -242,6 +217,7 @@ fn open_vcs_diff(
     );
     let tab_title = format!("[{status_text}] {file_name}");
 
+    // Build tab label with close button
     let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
     let label = Label::new(Some(&tab_title));
     let close_btn = Button::from_icon_name("window-close-symbolic");
@@ -249,26 +225,156 @@ fn open_vcs_diff(
     tab_label_box.append(&label);
     tab_label_box.append(&close_btn);
 
-    let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
-    notebook.set_current_page(Some(page_num));
+    let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+    if let VcsDiffPlan::ConflictMerge {
+        temp_ours,
+        ours_content,
+        working,
+        temp_theirs,
+        theirs_content,
+    } = plan
     {
-        let nb = notebook.clone();
-        let w = dv.widget.clone();
-        let tabs = open_tabs.clone();
-        close_btn.connect_clicked(move |_| {
-            if let Some(n) = nb.page_num(&w) {
-                let win = nb
-                    .root()
-                    .and_then(|r| r.downcast::<ApplicationWindow>().ok());
-                if let Some(win) = win {
-                    close_notebook_tab(&win, &nb, &tabs, n);
-                } else {
-                    nb.remove_page(Some(n));
-                    tabs.borrow_mut().retain(|t| t.id != tab_id);
-                }
+        // Write temp files for ours/theirs
+        for (p, content) in [(&temp_ours, &ours_content), (&temp_theirs, &theirs_content)] {
+            if let Some(parent) = p.parent() {
+                let _ = fs::create_dir_all(parent);
             }
+            let _ = fs::write(p, content);
+        }
+
+        let labels = vec![
+            format!("Ours: {rel_path}"),
+            format!("Working: {rel_path}"),
+            format!("Theirs: {rel_path}"),
+        ];
+        let mv = build_merge_view(&temp_ours, &working, &temp_theirs, &labels, settings);
+        mv.widget
+            .insert_action_group("diff", Some(&mv.action_group));
+
+        open_tabs.borrow_mut().push(FileTab::Merge {
+            id: tab_id,
+            rel_path: rel_path.to_string(),
+            widget: mv.widget.clone(),
+            middle: PaneInfo {
+                path: mv.middle_tab_path.clone(),
+                buf: mv.middle_buf.clone(),
+                save: mv.middle_save.clone(),
+            },
         });
+
+        let page_num = notebook.append_page(&mv.widget, Some(&tab_label_box));
+        notebook.set_current_page(Some(page_num));
+        mv.middle_view.grab_focus();
+
+        {
+            let nb = notebook.clone();
+            let w = mv.widget.clone();
+            let ms = mv.middle_save.clone();
+            let mtp = mv.middle_tab_path.clone();
+            let tabs = open_tabs.clone();
+            close_btn.connect_clicked(move |_| {
+                if ms.is_sensitive() {
+                    if let Some(win) = nb.root().and_downcast::<ApplicationWindow>() {
+                        let nb2 = nb.clone();
+                        let w2 = w.clone();
+                        let tabs2 = tabs.clone();
+                        let label = mtp.borrow().clone();
+                        confirm_unsaved_dialog(&win, vec![(label, ms.clone())], move || {
+                            if let Some(n) = nb2.page_num(&w2) {
+                                nb2.remove_page(Some(n));
+                            }
+                            tabs2.borrow_mut().retain(|t| t.id() != tab_id);
+                        });
+                    }
+                } else if let Some(n) = nb.page_num(&w) {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
+                }
+            });
+        }
+    } else {
+        let (left_path, right_path) = match plan {
+            VcsDiffPlan::WithWorking {
+                temp_head,
+                working,
+                content,
+            } => {
+                if let Some(parent) = temp_head.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write(&temp_head, content);
+                (temp_head, working)
+            }
+            VcsDiffPlan::EmptyWithWorking {
+                temp_empty,
+                working,
+            } => {
+                if let Some(parent) = temp_empty.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                let _ = fs::write(&temp_empty, "");
+                (temp_empty, working)
+            }
+            VcsDiffPlan::WithDeleted {
+                temp_head,
+                temp_deleted,
+                content,
+            } => {
+                for p in [&temp_head, &temp_deleted] {
+                    if let Some(parent) = p.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                }
+                let _ = fs::write(&temp_head, content);
+                let _ = fs::write(&temp_deleted, "");
+                (temp_head, temp_deleted)
+            }
+            VcsDiffPlan::ConflictMerge { .. } => unreachable!(),
+        };
+
+        let labels = vec![format!("HEAD: {rel_path}"), format!("Working: {rel_path}")];
+        let dv = build_diff_view(&left_path, &right_path, &labels, settings);
+        dv.widget
+            .insert_action_group("diff", Some(&dv.action_group));
+
+        open_tabs.borrow_mut().push(FileTab::Diff {
+            id: tab_id,
+            rel_path: rel_path.to_string(),
+            widget: dv.widget.clone(),
+            left: PaneInfo {
+                path: dv.left_tab_path,
+                buf: dv.left_buf,
+                save: dv.left_save,
+            },
+            right: PaneInfo {
+                path: dv.right_tab_path,
+                buf: dv.right_buf,
+                save: dv.right_save,
+            },
+        });
+
+        let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
+        notebook.set_current_page(Some(page_num));
+
+        {
+            let nb = notebook.clone();
+            let w = dv.widget.clone();
+            let tabs = open_tabs.clone();
+            close_btn.connect_clicked(move |_| {
+                if let Some(n) = nb.page_num(&w) {
+                    let win = nb
+                        .root()
+                        .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+                    if let Some(win) = win {
+                        close_notebook_tab(&win, &nb, &tabs, n);
+                    } else {
+                        nb.remove_page(Some(n));
+                        tabs.borrow_mut().retain(|t| t.id() != tab_id);
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -349,12 +455,17 @@ pub(super) fn build_vcs_window(
     vcs_tab.append(&list_scroll);
     vcs_tab.set_vexpand(true);
 
-    // Notebook
-    let notebook = Notebook::new();
-    notebook.set_scrollable(true);
-    notebook.append_page(&vcs_tab, Some(&Label::new(Some("Changes"))));
-
-    let open_tabs: Rc<RefCell<Vec<FileTab>>> = Rc::new(RefCell::new(Vec::new()));
+    // ── Window via shared helper ─────────────────────────────────────
+    let repo_name = repo_root.file_name().map_or_else(
+        || repo_root.to_string_lossy().into_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let AppWindow {
+        window,
+        notebook,
+        open_tabs,
+    } = build_app_window(app, &settings, 700, 500, true);
+    window.set_title(Some(&format!("mergers — {repo_name} (git)")));
 
     // Open selected item helper (shared by double-click and Enter key)
     let open_selected = {
@@ -433,48 +544,23 @@ pub(super) fn build_vcs_window(
         refresh_btn.connect_clicked(move |_| r());
     }
 
-    // File watcher
-    let vcs_watcher_alive = Rc::new(Cell::new(true));
-    let (fs_tx, fs_rx) = mpsc::channel::<()>();
-    let vcs_watcher = {
-        use notify::{RecursiveMode, Watcher};
-        let mut w =
-            notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                if let Ok(event) = res {
-                    // Skip events inside .git directory (git status touches
-                    // index files, which would cause an infinite refresh loop)
-                    let dominated_by_git = event
-                        .paths
-                        .iter()
-                        .all(|p| p.components().any(|c| c.as_os_str() == ".git"));
-                    if !dominated_by_git {
-                        let _ = fs_tx.send(());
-                    }
-                }
-            })
-            .expect("Failed to create file watcher");
-        w.watch(&repo_root, RecursiveMode::Recursive).ok();
-        w
-    };
-    {
-        let r = refresh.clone();
-        let alive = vcs_watcher_alive.clone();
-        let mut dirty = false;
-        gtk4::glib::timeout_add_local(Duration::from_millis(500), move || {
-            let _ = &vcs_watcher; // prevent drop; watcher lives until closure is dropped
-            if !alive.get() {
-                return gtk4::glib::ControlFlow::Break;
-            }
-            while fs_rx.try_recv().is_ok() {
-                dirty = true;
-            }
-            if dirty {
-                dirty = false;
+    // File watcher — skip events inside .git/ to avoid infinite refresh loops
+    let r = refresh.clone();
+    let vcs_watcher = start_file_watcher(
+        &[repo_root.as_path()],
+        true,
+        Some(Box::new(|event: &notify::Event| {
+            !event
+                .paths
+                .iter()
+                .all(|p| p.components().any(|c| c.as_os_str() == ".git"))
+        })),
+        move |fs_dirty| {
+            if fs_dirty {
                 r();
             }
-            gtk4::glib::ControlFlow::Continue
-        });
-    }
+        },
+    );
 
     // ── VCS context menu ──────────────────────────────────────────
     let vcs_action_group = gio::SimpleActionGroup::new();
@@ -560,8 +646,7 @@ pub(super) fn build_vcs_window(
                         "Trash",
                         move || {
                             let path = rr.join(&rel);
-                            if let Err(e) = gio::File::for_path(&path).trash(gio::Cancellable::NONE)
-                            {
+                            if let Err(e) = move_to_trash(&path) {
                                 eprintln!("Trash failed: {e}");
                             }
                             r();
@@ -622,78 +707,12 @@ pub(super) fn build_vcs_window(
         view.add_controller(gesture);
     }
 
-    // Window
-    let repo_name = repo_root.file_name().map_or_else(
-        || repo_root.to_string_lossy().into_owned(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let window = ApplicationWindow::builder()
-        .application(app)
-        .title(format!("mergers — {repo_name} (git)"))
-        .default_width(700)
-        .default_height(500)
-        .child(&notebook)
-        .build();
-
-    // Preferences action
-    let win_actions = gio::SimpleActionGroup::new();
-    {
-        let action = gio::SimpleAction::new("prefs", None);
-        let w = window.clone();
-        let st = settings.clone();
-        action.connect_activate(move |_, _| {
-            show_preferences(&w, &st);
-        });
-        win_actions.add_action(&action);
-    }
-    // Close-tab action (Ctrl+W) — close current file tab or window
-    {
-        let action = gio::SimpleAction::new("close-tab", None);
-        let nb = notebook.clone();
-        let w = window.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| match nb.current_page() {
-            Some(0) | None => w.close(),
-            Some(n) => close_notebook_tab(&w, &nb, &tabs, n),
-        });
-        win_actions.add_action(&action);
-    }
-    // New comparison (Ctrl+N)
-    {
-        let action = gio::SimpleAction::new("new-comparison", None);
-        let nb = notebook.clone();
-        let st = settings.clone();
-        let tabs = open_tabs.clone();
-        action.connect_activate(move |_, _| {
-            build_new_comparison_tab(&nb, &st, &tabs);
-        });
-        win_actions.add_action(&action);
-    }
-    add_tab_navigation_actions(&win_actions, &notebook);
-    window.insert_action_group("win", Some(&win_actions));
-    add_tab_navigation_keys(&window);
-
-    // Unsaved-changes guard on window close button
-    {
-        let tabs = open_tabs.clone();
-        window.connect_close_request(move |w| handle_notebook_close_request(w, &tabs));
-    }
-
-    if let Some(gtk_app) = window.application() {
-        set_platform_accels(&gtk_app, "diff.save", &["<Ctrl>s"]);
-        set_platform_accels(&gtk_app, "diff.refresh", &["<Ctrl>r"]);
-        set_platform_accels(&gtk_app, "diff.open-externally", &["<Ctrl><Shift>o"]);
-        set_platform_accels(&gtk_app, "diff.save-as", &["<Ctrl><Shift>s"]);
-        set_platform_accels(&gtk_app, "diff.save-all", &["<Ctrl><Shift>l"]);
-        set_platform_accels(&gtk_app, "win.prefs", &["<Ctrl>comma"]);
-        set_platform_accels(&gtk_app, "win.close-tab", &["<Ctrl>w"]);
-        set_platform_accels(&gtk_app, "win.new-comparison", &["<Ctrl>n"]);
-    }
+    notebook.append_page(&vcs_tab, Some(&Label::new(Some("Changes"))));
 
     // Clean up temp dir and stop watcher on destroy
     let td = temp_dir.clone();
     window.connect_destroy(move |_| {
-        vcs_watcher_alive.set(false);
+        vcs_watcher.alive.set(false);
         let _ = fs::remove_dir_all(&td);
     });
 
@@ -723,6 +742,10 @@ mod tests {
         let (label, css) = vcs_status_info("U");
         assert_eq!(label, "Untracked");
         assert_eq!(css, "diff-inserted");
+
+        let (label, css) = vcs_status_info("C");
+        assert_eq!(label, "Conflict");
+        assert_eq!(css, "diff-conflict");
 
         let (label, css) = vcs_status_info("X");
         assert_eq!(label, "");

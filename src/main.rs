@@ -15,7 +15,7 @@ struct Cli {
     paths: Vec<PathBuf>,
 
     /// Custom labels for panes (one per pane)
-    #[arg(short = 'L', long = "label")]
+    #[arg(short = 'L', long = "label", value_name = "LABEL")]
     labels: Vec<String>,
 }
 
@@ -68,7 +68,10 @@ fn main() -> glib::ExitCode {
         }
     } else if cli.paths.len() == 1 {
         let path = &cli.paths[0];
-        if path.is_dir() && vcs::is_git_repo(path) {
+        if !path.exists() {
+            eprintln!("Error: '{}' does not exist", path.display());
+            std::process::exit(1);
+        } else if path.is_dir() && vcs::is_git_repo(path) {
             CompareMode::Vcs { dir: path.clone() }
         } else if path.is_dir() {
             eprintln!("Error: '{}' is not inside a git repository", path.display());
