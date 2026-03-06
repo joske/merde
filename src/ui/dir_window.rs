@@ -498,36 +498,38 @@ pub(super) fn build_dir_tab(
     // they are created), since ColumnView content is clipped by its parent.
     let left_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
     let right_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
-    {
+    for (own_view, other_view, own_scroll, other_scroll, is_left) in [
+        (&left_view, &right_view, &left_scroll_slot, &right_scroll_slot, true),
+        (&right_view, &left_view, &right_scroll_slot, &left_scroll_slot, false),
+    ] {
         let fl = focused_left.clone();
-        let lv = left_view.clone();
-        let rv = right_view.clone();
+        let ov = own_view.clone();
+        let otv = other_view.clone();
         let sel = dir_sel.clone();
-        let ls = left_scroll_slot.clone();
-        let rs = right_scroll_slot.clone();
+        let os = own_scroll.clone();
+        let ots = other_scroll.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
-            if fl.get() {
+            if fl.get() == is_left {
                 return;
             }
-            fl.set(true);
-            lv.set_opacity(1.0);
-            rv.set_opacity(0.55);
-            if let Some(sw) = ls.borrow().as_ref() {
+            fl.set(is_left);
+            ov.set_opacity(1.0);
+            otv.set_opacity(0.55);
+            if let Some(sw) = os.borrow().as_ref() {
                 sw.add_css_class("dir-pane-focused");
                 sw.remove_css_class("dir-pane-inactive");
             }
-            if let Some(sw) = rs.borrow().as_ref() {
+            if let Some(sw) = ots.borrow().as_ref() {
                 sw.remove_css_class("dir-pane-focused");
                 sw.add_css_class("dir-pane-inactive");
             }
-            // Sync keyboard cursor to selection, then restore scroll position
             let pos = sel.selected();
-            let vadj = lv
+            let vadj = ov
                 .ancestor(ScrolledWindow::static_type())
                 .and_downcast::<ScrolledWindow>()
                 .map(|sw| (sw.vadjustment().value(), sw));
-            let v = lv.clone();
+            let v = ov.clone();
             gtk4::glib::idle_add_local_once(move || {
                 v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
                 if let Some((val, sw)) = vadj {
@@ -538,47 +540,7 @@ pub(super) fn build_dir_tab(
                 }
             });
         });
-        left_view.add_controller(fc);
-        let fl = focused_left.clone();
-        let lv = left_view.clone();
-        let rv = right_view.clone();
-        let sel = dir_sel.clone();
-        let ls = left_scroll_slot.clone();
-        let rs = right_scroll_slot.clone();
-        let fc = EventControllerFocus::new();
-        fc.connect_enter(move |_| {
-            if !fl.get() {
-                return;
-            }
-            fl.set(false);
-            rv.set_opacity(1.0);
-            lv.set_opacity(0.55);
-            if let Some(sw) = rs.borrow().as_ref() {
-                sw.add_css_class("dir-pane-focused");
-                sw.remove_css_class("dir-pane-inactive");
-            }
-            if let Some(sw) = ls.borrow().as_ref() {
-                sw.remove_css_class("dir-pane-focused");
-                sw.add_css_class("dir-pane-inactive");
-            }
-            // Sync keyboard cursor to selection, then restore scroll position
-            let pos = sel.selected();
-            let vadj = rv
-                .ancestor(ScrolledWindow::static_type())
-                .and_downcast::<ScrolledWindow>()
-                .map(|sw| (sw.vadjustment().value(), sw));
-            let v = rv.clone();
-            gtk4::glib::idle_add_local_once(move || {
-                v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
-                if let Some((val, sw)) = vadj {
-                    let sw2 = sw.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        sw2.vadjustment().set_value(val);
-                    });
-                }
-            });
-        });
-        right_view.add_controller(fc);
+        own_view.add_controller(fc);
     }
 
     // Left/Right arrow keys switch between panes
@@ -890,9 +852,7 @@ pub(super) fn build_dir_tab(
             rh.set_text(&right_text);
             rh.set_tooltip_text(Some(&*rd.borrow()));
             // Update window title
-            if let Some(win) = btn
-                .root()
-                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+            if let Some(win) = find_window(btn)
             {
                 let ln = Path::new(ld.borrow().as_str())
                     .file_name()
@@ -921,84 +881,35 @@ pub(super) fn build_dir_tab(
 
     // Directory action group — used by both keyboard shortcuts and toolbar buttons
     let dir_action_group = gio::SimpleActionGroup::new();
-    {
-        let action = gio::SimpleAction::new("folder-copy-left", None);
+    for (name, src_dir, dst_dir, only_status) in [
+        ("folder-copy-left", &right_dir, &left_dir, FileStatus::RightOnly),
+        ("folder-copy-right", &left_dir, &right_dir, FileStatus::LeftOnly),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
         let get_row = get_selected_row.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
+        let sd = src_dir.clone();
+        let dd = dst_dir.clone();
         let reload = reload_dir.clone();
         let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let info = DirRowInfo::decode(&raw);
-                if info.status == FileStatus::RightOnly || info.status == FileStatus::Different {
+                if info.status == only_status || info.status == FileStatus::Different {
                     let rel = info.rel_path;
-                    let src = Path::new(rd.borrow().as_str()).join(&rel);
-                    let dst = Path::new(ld.borrow().as_str()).join(&rel);
+                    let src = Path::new(sd.borrow().as_str()).join(&rel);
+                    let dst = Path::new(dd.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
                     let lv2 = lv.clone();
                     let do_copy = move || {
                         if let Err(e) = copy_path_recursive(&src, &dst)
-                            && let Some(win) = lv2
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                            && let Some(win) = find_window(&lv2)
                         {
                             show_error_dialog(&win, &format!("Copy failed: {e}"));
                         }
                         reload();
                     };
                     if info.status == FileStatus::Different {
-                        if let Some(win) = lv
-                            .root()
-                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
-                            show_confirm_dialog(
-                                &win,
-                                &format!("Overwrite {rel}?"),
-                                "The destination file will be replaced.",
-                                "Overwrite",
-                                do_copy,
-                            );
-                        }
-                    } else {
-                        do_copy();
-                    }
-                }
-            }
-        });
-        dir_action_group.add_action(&action);
-    }
-    {
-        let action = gio::SimpleAction::new("folder-copy-right", None);
-        let get_row = get_selected_row.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
-        let reload = reload_dir.clone();
-        let lv = left_view.clone();
-        action.connect_activate(move |_, _| {
-            if let Some(raw) = get_row() {
-                let info = DirRowInfo::decode(&raw);
-                if info.status == FileStatus::LeftOnly || info.status == FileStatus::Different {
-                    let rel = info.rel_path;
-                    let src = Path::new(ld.borrow().as_str()).join(&rel);
-                    let dst = Path::new(rd.borrow().as_str()).join(&rel);
-                    let reload = reload.clone();
-                    let lv2 = lv.clone();
-                    let do_copy = move || {
-                        if let Err(e) = copy_path_recursive(&src, &dst)
-                            && let Some(win) = lv2
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
-                            show_error_dialog(&win, &format!("Copy failed: {e}"));
-                        }
-                        reload();
-                    };
-                    if info.status == FileStatus::Different {
-                        if let Some(win) = lv
-                            .root()
-                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
+                        if let Some(win) = find_window(&lv) {
                             show_confirm_dialog(
                                 &win,
                                 &format!("Overwrite {rel}?"),
@@ -1038,9 +949,7 @@ pub(super) fn build_dir_tab(
                     }
                 };
                 if let Some(p) = path
-                    && let Some(win) = lv
-                        .root()
-                        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                    && let Some(win) = find_window(&lv)
                 {
                     let reload = reload.clone();
                     show_confirm_dialog(
