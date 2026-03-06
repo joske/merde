@@ -27,18 +27,22 @@ pub fn build_undo_redo_box(active_view: &Rc<RefCell<TextView>>) -> (Button, Butt
     {
         let av = active_view.clone();
         undo_btn.connect_clicked(move |_| {
-            let buf = av.borrow().buffer();
+            let tv = av.borrow().clone();
+            let buf = tv.buffer();
             if buf.can_undo() {
                 buf.undo();
+                tv.scroll_mark_onscreen(&buf.get_insert());
             }
         });
     }
     {
         let av = active_view.clone();
         redo_btn.connect_clicked(move |_| {
-            let buf = av.borrow().buffer();
+            let tv = av.borrow().clone();
+            let buf = tv.buffer();
             if buf.can_redo() {
                 buf.redo();
+                tv.scroll_mark_onscreen(&buf.get_insert());
             }
         });
     }
