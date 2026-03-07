@@ -67,9 +67,8 @@ def test_identical_files_no_chunks(app_process, fixture_path):
     app = find_app()
     doDelay(1)
     labels = _find_labels(app)
-    # The chunk navigation label should show "0 of 0" or similar
-    assert any("0" in t for t in labels), \
-        f"Expected chunk count with 0 in labels: {labels}"
+    assert any("No changes" in t for t in labels), \
+        f"Expected 'No changes' in labels: {labels}"
 
 
 def test_chunk_navigation_label(app_process, fixture_path):
@@ -78,10 +77,9 @@ def test_chunk_navigation_label(app_process, fixture_path):
     app = find_app()
     doDelay(1)
     labels = _find_labels(app)
-    # Should show something like "1 of 3" or "0 of 3"
-    chunk_labels = [t for t in labels if " of " in t]
-    assert len(chunk_labels) > 0, \
-        f"Expected chunk navigation label with ' of ' in labels: {labels}"
+    # Should show something like "3 changes"
+    assert any("changes" in t for t in labels), \
+        f"Expected chunk count label with 'changes' in labels: {labels}"
 
 
 def test_blank_comparison(app_process):
