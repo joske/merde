@@ -1,24 +1,36 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_chunk_map(
+    area: &DrawingArea,
     cr: &gtk4::cairo::Context,
     height: f64,
     total_lines: i32,
     scroll: &ScrolledWindow,
     chunks: &[DiffChunk],
-    is_left: bool,
+    side: Side,
+    conflict_flags: &[bool],
 ) {
     if total_lines <= 0 || height <= 0.0 {
         return;
     }
 
-    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, is_left)
-    {
-        let (r, g, b) = match rect.tag {
-            DiffTag::Replace => band_replace(),
-            DiffTag::Delete | DiffTag::Insert => band_insert(),
-            DiffTag::Equal => continue,
+    for rect in &diff_state::compute_chunk_map_rects(
+        chunks,
+        total_lines as usize,
+        height,
+        side,
+        conflict_flags,
+    ) {
+        let (r, g, b) = if rect.conflict {
+            band_conflict()
+        } else {
+            match rect.tag {
+                DiffTag::Replace => band_replace(),
+                DiffTag::Delete | DiffTag::Insert => band_insert(),
+                DiffTag::Equal => continue,
+            }
         };
         cr.set_source_rgba(r, g, b, 0.7);
         cr.rectangle(1.0, rect.y_start, 10.0, rect.height);
@@ -30,7 +42,11 @@ pub fn draw_chunk_map(
     if adj.upper() > 0.0 {
         let view_start = (adj.value() / adj.upper()) * height;
         let view_h = (adj.page_size() / adj.upper()) * height;
-        let dark = is_dark_scheme();
+        let fg = area.color();
+        let fg_lum = 0.299 * f64::from(fg.red())
+            + 0.587 * f64::from(fg.green())
+            + 0.114 * f64::from(fg.blue());
+        let dark = fg_lum > 0.5;
         let v = if dark { 1.0 } else { 0.0 };
         let fill_alpha = if dark { 0.20 } else { 0.25 };
         let border_alpha = if dark { 0.45 } else { 0.55 };
@@ -43,4 +59,56 @@ pub fn draw_chunk_map(
         cr.rectangle(0.0, view_start + view_h - 1.0, 12.0, 1.0);
         let _ = cr.fill();
     }
+}
+
+pub fn create_chunk_map(
+    buf: &TextBuffer,
+    scroll: &ScrolledWindow,
+    chunks: &Rc<RefCell<Vec<DiffChunk>>>,
+    side: Side,
+    other_chunks: Option<&Rc<RefCell<Vec<DiffChunk>>>>,
+    other_mid: Option<(Side, Side)>,
+) -> DrawingArea {
+    let map = DrawingArea::new();
+    map.set_content_width(12);
+    map.set_vexpand(true);
+    {
+        let buf = buf.clone();
+        let scroll = scroll.clone();
+        let chunks = chunks.clone();
+        let other_chunks = other_chunks.cloned();
+        map.set_draw_func(move |area, cr, _w, h| {
+            let flags: Vec<bool> =
+                if let (Some(oc), Some((my_mid, oc_mid))) = (&other_chunks, other_mid) {
+                    conflict_flags(&chunks.borrow(), my_mid, &oc.borrow(), oc_mid)
+                } else {
+                    Vec::new()
+                };
+            draw_chunk_map(
+                area,
+                cr,
+                h as f64,
+                buf.line_count(),
+                &scroll,
+                &chunks.borrow(),
+                side,
+                &flags,
+            );
+        });
+    }
+    {
+        let gesture = GestureClick::new();
+        let scroll = scroll.clone();
+        let m = map.clone();
+        gesture.connect_pressed(move |_, _, _x, y| {
+            let h = m.height() as f64;
+            if h > 0.0 {
+                let adj = scroll.vadjustment();
+                let target = (y / h) * adj.upper() - adj.page_size() / 2.0;
+                adj.set_value(target.max(0.0));
+            }
+        });
+        map.add_controller(gesture);
+    }
+    map
 }

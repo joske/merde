@@ -17,7 +17,7 @@ $(VENV): tests/ui_integration/requirements.txt
 test-release: $(VENV)
 	cargo build --release
 	xvfb-run -a cargo test
-	xvfb-run -a $(PYTEST) tests/ui_integration/ -v
+	dbus-run-session -- xvfb-run -a $(PYTEST) tests/ui_integration/ -v
 
 fmt:
 	cargo +nightly fmt

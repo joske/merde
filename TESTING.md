@@ -67,7 +67,8 @@
 - [ ] Escape closes find bar from source pane (not just from find entry)
 - [ ] Replace: replaces current selection if it matches
 - [ ] Replace All: replaces in both buffers
-- [ ] Close (X / Escape): hides bar, clears highlights
+- [ ] Close (X / Escape): hides bar, clears highlights, returns focus to pane
+- [ ] After closing find bar, Ctrl+F / Ctrl+H work immediately
 
 ### Save
 - [ ] Ctrl+S: saves focused pane; button goes insensitive
@@ -129,6 +130,8 @@
 - [ ] Tree view with expandable directories
 - [ ] Columns: Name (with icon), Size, Modification time
 - [ ] Directory headers above each pane with full path as tooltip
+- [ ] Copy path button next to each header: copies full absolute path to clipboard
+- [ ] Copy path after swap: copies the swapped (current) path, not the original
 - [ ] Status colors: blue (different), orange (left-only), green (right-only), dim italic (missing side)
 
 ### Navigation
@@ -145,14 +148,19 @@
 - [ ] Copy to left (Alt+Left): copies right to left; confirms if overwriting
 - [ ] Copy to right (Alt+Right): copies left to right; confirms if overwriting
 - [ ] Delete (Delete key): trashes selected file with confirmation
+- [ ] Collapse all: collapses every expanded directory row
+- [ ] Expand all: expands every directory row
 - [ ] Swap panes: rescans, updates headers and window title
 - [ ] Preferences (Ctrl+,)
 
 ### Context Menu
 - [ ] Right-click selects the clicked row first
+- [ ] Right-click targets correct row: select row A, right-click row B, action operates on B (not A)
 - [ ] "Open Diff": opens diff tab (disabled for directories)
 - [ ] "Copy to Left" / "Copy to Right": enabled for appropriate statuses
-- [ ] "Delete": always available
+- [ ] "Delete": enabled only when file exists on focused side
+- [ ] "Open Externally" / "Copy File Path": enabled only when file exists on focused side
+- [ ] Missing-side file: Copy, Delete, Open Externally, Copy Path all disabled
 
 ### Notebook Tabs
 - [ ] Directory tab labeled with "dir1 — dir2"
@@ -181,6 +189,7 @@
 - [ ] Hide hidden files off: dotfiles shown in tree
 
 ### Edge Cases
+- [ ] Collapse all with missing-side files expanded: no crash
 - [ ] Deeply nested directory trees
 - [ ] Copy directory recursively: all nested files copied
 - [ ] Dir -> file tab -> swap -> edit -> save dialog shows correct filename
@@ -219,7 +228,7 @@
 ### Find / Replace
 - [ ] Ctrl+F/H: find bar highlights matches across all three buffers
 - [ ] Match count sums all three buffers
-- [ ] Replace All replaces in all three buffers
+- [ ] Replace All replaces only in editable middle buffer (not read-only left/right)
 
 ### Save
 - [ ] Ctrl+S: saves middle pane
@@ -242,8 +251,10 @@
 
 ### Display
 - [ ] Window title: "mergers -- reponame (git)"
-- [ ] ColumnView: Status and File columns
+- [ ] ColumnView: Status, File, and Extra columns
 - [ ] Status colors: Modified/Renamed = blue, Added/Untracked = green, Deleted = orange
+- [ ] Extra column: "Staged" for fully staged, "Partially staged" for staged+unstaged
+- [ ] Conflict files: Extra column empty (not falsely "Staged")
 - [ ] Repo path label and changed file count
 
 ### Opening Diffs
@@ -257,7 +268,9 @@
 - [ ] Right-click selects clicked row
 - [ ] "Open Diff": opens diff (disabled for Untracked)
 - [ ] "Discard Changes": runs `git checkout --` with confirmation (disabled for Untracked)
-- [ ] "Stage": runs `git add`
+- [ ] "Stage": runs `git add` (disabled when already staged)
+- [ ] "Stage" on conflicted file: confirmation dialog warning it marks conflict resolved
+- [ ] "Unstage": runs `git restore --staged` (enabled only when staged)
 - [ ] "Trash": moves to trash with confirmation (Untracked only)
 
 ### File Watcher

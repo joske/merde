@@ -1,6 +1,13 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+static DIFF_KEYS: KeyBindings = KeyBindings {
+    alt_left: "copy-chunk-right-left",
+    alt_right: "copy-chunk-left-right",
+    extra_ctrl_shift: &[("export-patch", gtk4::gdk::Key::p, gtk4::gdk::Key::P)],
+    extra_ctrl: &[],
+};
+
 // ─── Shared diff view construction ─────────────────────────────────────────
 
 type SwapCallback = Rc<RefCell<Option<Box<dyn Fn()>>>>;
@@ -290,27 +297,13 @@ pub(super) fn build_diff_view(
             });
     }
     // Redraw filler overlays on scroll
-    {
+    for scroll in [&left_pane.scroll, &right_pane.scroll] {
         let lf = left_pane.filler_overlay.clone();
         let rf = right_pane.filler_overlay.clone();
-        left_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lf.queue_draw();
-                rf.queue_draw();
-            });
-    }
-    {
-        let lf = left_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        right_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lf.queue_draw();
-                rf.queue_draw();
-            });
+        scroll.vadjustment().connect_value_changed(move |_| {
+            lf.queue_draw();
+            rf.queue_draw();
+        });
     }
 
     let chunk_label = Label::new(None);
@@ -423,176 +416,28 @@ pub(super) fn build_diff_view(
         });
     }
 
-    // Prev chunk
-    {
-        let ch = chunks.clone();
-        let cur = current_chunk.clone();
-        let ltv = left_pane.text_view.clone();
-        let rtv = right_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let rs = right_pane.scroll.clone();
-        let lbl = chunk_label.clone();
-        let lf = left_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pb = prev_btn.clone();
-        let nb = next_btn.clone();
-        prev_btn.connect_clicked(move |_| {
-            navigate_chunk(
-                &ch.borrow(),
-                &cur,
-                -1,
-                &ltv,
-                &lb,
-                &ls,
-                &rtv,
-                &rb,
-                &rs,
-                &av.borrow(),
-                st.borrow().wrap_around_navigation,
-            );
-            update_chunk_label(&lbl, &ch.borrow(), cur.get());
-            update_chunk_nav_sensitivity(
-                &pb,
-                &nb,
-                &ch.borrow(),
-                &av.borrow(),
-                &rtv,
-                st.borrow().wrap_around_navigation,
-            );
-            lf.queue_draw();
-            rf.queue_draw();
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
-
-    // Next chunk
-    {
-        let ch = chunks.clone();
-        let cur = current_chunk.clone();
-        let ltv = left_pane.text_view.clone();
-        let rtv = right_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let rs = right_pane.scroll.clone();
-        let lbl = chunk_label.clone();
-        let lf = left_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pb = prev_btn.clone();
-        let nb = next_btn.clone();
-        next_btn.connect_clicked(move |_| {
-            navigate_chunk(
-                &ch.borrow(),
-                &cur,
-                1,
-                &ltv,
-                &lb,
-                &ls,
-                &rtv,
-                &rb,
-                &rs,
-                &av.borrow(),
-                st.borrow().wrap_around_navigation,
-            );
-            update_chunk_label(&lbl, &ch.borrow(), cur.get());
-            update_chunk_nav_sensitivity(
-                &pb,
-                &nb,
-                &ch.borrow(),
-                &av.borrow(),
-                &rtv,
-                st.borrow().wrap_around_navigation,
-            );
-            lf.queue_draw();
-            rf.queue_draw();
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
+    // Prev/next chunk – delegate to GActions
+    prev_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.prev-chunk", None).ok();
+    });
+    next_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.next-chunk", None).ok();
+    });
 
     // ── Chunk maps (overview strips) ─────────────────────────────
-    let left_chunk_map = DrawingArea::new();
-    left_chunk_map.set_content_width(12);
-    left_chunk_map.set_vexpand(true);
-    {
-        let lb = left_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let ch = chunks.clone();
-        left_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), true);
-        });
-    }
-    // Click to jump
-    {
-        let gesture = GestureClick::new();
-        let ls = left_pane.scroll.clone();
-        let lm = left_chunk_map.clone();
-        gesture.connect_pressed(move |_, _, _x, y| {
-            let h = lm.height() as f64;
-            if h > 0.0 {
-                let adj = ls.vadjustment();
-                let target = (y / h) * adj.upper() - adj.page_size() / 2.0;
-                adj.set_value(target.max(0.0));
-            }
-        });
-        left_chunk_map.add_controller(gesture);
-    }
+    let left_chunk_map =
+        create_chunk_map(&left_buf, &left_pane.scroll, &chunks, Side::A, None, None);
+    let right_chunk_map =
+        create_chunk_map(&right_buf, &right_pane.scroll, &chunks, Side::B, None, None);
 
-    let right_chunk_map = DrawingArea::new();
-    right_chunk_map.set_content_width(12);
-    right_chunk_map.set_vexpand(true);
-    {
-        let rb = right_buf.clone();
-        let rs = right_pane.scroll.clone();
-        let ch = chunks.clone();
-        right_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), false);
-        });
-    }
-    {
-        let gesture = GestureClick::new();
-        let rs = right_pane.scroll.clone();
-        let rm = right_chunk_map.clone();
-        gesture.connect_pressed(move |_, _, _x, y| {
-            let h = rm.height() as f64;
-            if h > 0.0 {
-                let adj = rs.vadjustment();
-                let target = (y / h) * adj.upper() - adj.page_size() / 2.0;
-                adj.set_value(target.max(0.0));
-            }
-        });
-        right_chunk_map.add_controller(gesture);
-    }
-
-    // Redraw chunk maps on scroll and buffer changes
-    {
+    // Redraw chunk maps on scroll
+    for scroll in [&left_pane.scroll, &right_pane.scroll] {
         let lcm = left_chunk_map.clone();
         let rcm = right_chunk_map.clone();
-        left_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lcm.queue_draw();
-                rcm.queue_draw();
-            });
-    }
-    {
-        let lcm = left_chunk_map.clone();
-        let rcm = right_chunk_map.clone();
-        right_pane
-            .scroll
-            .vadjustment()
-            .connect_value_changed(move |_| {
-                lcm.queue_draw();
-                rcm.queue_draw();
-            });
+        scroll.vadjustment().connect_value_changed(move |_| {
+            lcm.queue_draw();
+            rcm.queue_draw();
+        });
     }
 
     // Re-diff on any buffer change, and update all visuals when diff completes
@@ -856,6 +701,8 @@ pub(super) fn build_diff_view(
             );
             lf.queue_draw();
             rf.queue_draw();
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -901,6 +748,8 @@ pub(super) fn build_diff_view(
             );
             lf.queue_draw();
             rf.queue_draw();
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -1120,69 +969,13 @@ pub(super) fn build_diff_view(
         let lb = left_buf.clone();
         let rb = right_buf.clone();
         key_ctl.connect_key_pressed(move |_, key, _, mods| {
-            // Escape closes the find bar if visible
             if key == gtk4::gdk::Key::Escape && fr.is_child_revealed() {
                 fr.set_reveal_child(false);
                 clear_search_tags(&lb);
                 clear_search_tags(&rb);
                 return gtk4::glib::Propagation::Stop;
             }
-            let action_name = if mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
-                match key {
-                    k if k == gtk4::gdk::Key::Up => Some("prev-chunk"),
-                    k if k == gtk4::gdk::Key::Down => Some("next-chunk"),
-                    k if k == gtk4::gdk::Key::Left => Some("copy-chunk-right-left"),
-                    k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-right"),
-                    _ => None,
-                }
-            } else if has_primary_modifier(mods) {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    if key == gtk4::gdk::Key::p || key == gtk4::gdk::Key::P {
-                        Some("export-patch")
-                    } else if key == gtk4::gdk::Key::o || key == gtk4::gdk::Key::O {
-                        Some("open-externally")
-                    } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
-                        Some("save-as")
-                    } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
-                        Some("save-all")
-                    } else if cfg!(target_os = "macos")
-                        && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
-                    {
-                        Some("find-replace")
-                    } else {
-                        None
-                    }
-                } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
-                    Some("save")
-                } else if key == gtk4::gdk::Key::r || key == gtk4::gdk::Key::R {
-                    Some("refresh")
-                } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
-                    Some("prev-chunk")
-                } else if key == gtk4::gdk::Key::d || key == gtk4::gdk::Key::D {
-                    Some("next-chunk")
-                } else if key == gtk4::gdk::Key::f || key == gtk4::gdk::Key::F {
-                    Some("find")
-                } else if !cfg!(target_os = "macos")
-                    && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
-                {
-                    Some("find-replace")
-                } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
-                    Some("go-to-line")
-                } else {
-                    None
-                }
-            } else if key == gtk4::gdk::Key::F3 {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    Some("find-prev")
-                } else {
-                    Some("find-next")
-                }
-            } else if key == gtk4::gdk::Key::F5 {
-                Some("refresh")
-            } else {
-                None
-            };
-            if let Some(name) = action_name {
+            if let Some(name) = map_key_to_action(key, mods, &DIFF_KEYS) {
                 if let Some(action) = ag.lookup_action(name) {
                     action
                         .downcast_ref::<gio::SimpleAction>()
@@ -1277,31 +1070,17 @@ pub(super) fn open_file_diff(
     });
 
     // Tab label
-    let file_name = Path::new(rel_path).file_name().map_or_else(
-        || rel_path.to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let left_dir_name = Path::new(left_dir)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let right_dir_name = Path::new(right_dir)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let file_name = display_name(Path::new(rel_path));
+    let left_dir_name = display_name(Path::new(left_dir));
+    let right_dir_name = display_name(Path::new(right_dir));
     let tab_title = format!("[{left_dir_name}] {file_name} — [{right_dir_name}] {file_name}");
 
-    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
-    let label = Label::new(Some(&tab_title));
-    let close_btn = Button::from_icon_name("window-close-symbolic");
-    close_btn.set_has_frame(false);
-    tab_label_box.append(&label);
-    tab_label_box.append(&close_btn);
+    let (tab_label_box, close_btn) = make_closeable_tab_label(&tab_title);
 
     // Update tab label when panes are swapped (FileTab paths are swapped
     // centrally in build_diff_view's swap handler)
     {
-        let lbl = label.clone();
+        let lbl = tab_label_box.first_child().and_downcast::<Label>().unwrap();
         let ln = left_dir_name;
         let rn = right_dir_name;
         let fn_ = file_name;
@@ -1362,14 +1141,8 @@ pub(super) fn open_file_diff_paths(
     // Track tab
     let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-    let left_name = left_path.file_name().map_or_else(
-        || left_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let right_name = right_path.file_name().map_or_else(
-        || right_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
+    let left_name = display_name(&left_path);
+    let right_name = display_name(&right_path);
     let tab_title = format!("{left_name} — {right_name}");
 
     open_tabs.borrow_mut().push(FileTab::Diff {
@@ -1388,17 +1161,13 @@ pub(super) fn open_file_diff_paths(
         },
     });
 
-    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
-    let label = Label::new(Some(&tab_title));
-    let close_btn = Button::from_icon_name("window-close-symbolic");
-    close_btn.set_has_frame(false);
-    tab_label_box.append(&label);
-    tab_label_box.append(&close_btn);
+    let (tab_label_box, close_btn) = make_closeable_tab_label(&tab_title);
+    let label = tab_label_box.first_child().and_downcast::<Label>().unwrap();
 
     // Update tab label when panes are swapped (FileTab paths are swapped
     // centrally in build_diff_view's swap handler)
     {
-        let lbl = label.clone();
+        let lbl = label;
         let ln = left_name;
         let rn = right_name;
         let swapped = Rc::new(Cell::new(false));
@@ -1472,12 +1241,7 @@ pub(super) fn open_blank_diff(
         },
     });
 
-    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
-    let label = Label::new(Some("Blank Comparison"));
-    let close_btn = Button::from_icon_name("window-close-symbolic");
-    close_btn.set_has_frame(false);
-    tab_label_box.append(&label);
-    tab_label_box.append(&close_btn);
+    let (tab_label_box, close_btn) = make_closeable_tab_label("Blank Comparison");
 
     let page_num = notebook.append_page(&dv.widget, Some(&tab_label_box));
     notebook.set_current_page(Some(page_num));

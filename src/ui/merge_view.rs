@@ -1,6 +1,16 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+static MERGE_KEYS: KeyBindings = KeyBindings {
+    alt_left: "copy-chunk-right-middle",
+    alt_right: "copy-chunk-left-middle",
+    extra_ctrl_shift: &[],
+    extra_ctrl: &[
+        ("prev-conflict", gtk4::gdk::Key::j, gtk4::gdk::Key::J),
+        ("next-conflict", gtk4::gdk::Key::k, gtk4::gdk::Key::K),
+    ],
+};
+
 // ─── 3-way merge view ───────────────────────────────────────────────────────
 
 pub(super) struct MergeViewResult {
@@ -85,190 +95,7 @@ fn refresh_merge_diffs(
     });
 }
 
-/// 3-way scroll sync using chunk-based mapping (matching meld's influence-through-middle).
-///
-/// `left_chunks`: left(A) vs middle(B).  `right_chunks`: middle(A) vs right(B).
-#[allow(clippy::too_many_arguments)]
-fn setup_scroll_sync_3way(
-    left_scroll: &ScrolledWindow,
-    middle_scroll: &ScrolledWindow,
-    right_scroll: &ScrolledWindow,
-    left_tv: &TextView,
-    middle_tv: &TextView,
-    right_tv: &TextView,
-    left_buf: &TextBuffer,
-    middle_buf: &TextBuffer,
-    right_buf: &TextBuffer,
-    left_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
-    right_chunks: &Rc<RefCell<Vec<DiffChunk>>>,
-    left_gutter: &DrawingArea,
-    right_gutter: &DrawingArea,
-) {
-    let syncing = Rc::new(Cell::new(false));
-
-    // Vertical: Left → Middle (left_chunks), then Middle → Right (right_chunks)
-    {
-        let ms = middle_scroll.clone();
-        let rs = right_scroll.clone();
-        let ltv = left_tv.clone();
-        let mtv = middle_tv.clone();
-        let rtv = right_tv.clone();
-        let mb = middle_buf.clone();
-        let rb = right_buf.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        let s = syncing.clone();
-        left_scroll.vadjustment().connect_value_changed(move |adj| {
-            lg.queue_draw();
-            rg.queue_draw();
-            if !s.get() {
-                s.set(true);
-                sync_vscroll(adj, &ltv, &ms.vadjustment(), &mtv, &mb, &lch.borrow(), true);
-                sync_vscroll(
-                    &ms.vadjustment(),
-                    &mtv,
-                    &rs.vadjustment(),
-                    &rtv,
-                    &rb,
-                    &rch.borrow(),
-                    true,
-                );
-                s.set(false);
-            }
-        });
-    }
-
-    // Vertical: Middle → Left (left_chunks) + Right (right_chunks)
-    {
-        let ls = left_scroll.clone();
-        let rs = right_scroll.clone();
-        let ltv = left_tv.clone();
-        let mtv = middle_tv.clone();
-        let rtv = right_tv.clone();
-        let lb = left_buf.clone();
-        let rb = right_buf.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        let s = syncing.clone();
-        middle_scroll
-            .vadjustment()
-            .connect_value_changed(move |adj| {
-                lg.queue_draw();
-                rg.queue_draw();
-                if !s.get() {
-                    s.set(true);
-                    sync_vscroll(
-                        adj,
-                        &mtv,
-                        &ls.vadjustment(),
-                        &ltv,
-                        &lb,
-                        &lch.borrow(),
-                        false,
-                    );
-                    sync_vscroll(adj, &mtv, &rs.vadjustment(), &rtv, &rb, &rch.borrow(), true);
-                    s.set(false);
-                }
-            });
-    }
-
-    // Vertical: Right → Middle (right_chunks), then Middle → Left (left_chunks)
-    {
-        let ls = left_scroll.clone();
-        let ms = middle_scroll.clone();
-        let ltv = left_tv.clone();
-        let mtv = middle_tv.clone();
-        let rtv = right_tv.clone();
-        let lb = left_buf.clone();
-        let mb = middle_buf.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lg = left_gutter.clone();
-        let rg = right_gutter.clone();
-        let s = syncing.clone();
-        right_scroll
-            .vadjustment()
-            .connect_value_changed(move |adj| {
-                lg.queue_draw();
-                rg.queue_draw();
-                if !s.get() {
-                    s.set(true);
-                    sync_vscroll(
-                        adj,
-                        &rtv,
-                        &ms.vadjustment(),
-                        &mtv,
-                        &mb,
-                        &rch.borrow(),
-                        false,
-                    );
-                    sync_vscroll(
-                        &ms.vadjustment(),
-                        &mtv,
-                        &ls.vadjustment(),
-                        &ltv,
-                        &lb,
-                        &lch.borrow(),
-                        false,
-                    );
-                    s.set(false);
-                }
-            });
-    }
-
-    // Horizontal: Left → Middle, Right
-    {
-        let ms = middle_scroll.clone();
-        let rs = right_scroll.clone();
-        let s = syncing.clone();
-        left_scroll.hadjustment().connect_value_changed(move |adj| {
-            if !s.get() {
-                s.set(true);
-                ms.hadjustment().set_value(adj.value());
-                rs.hadjustment().set_value(adj.value());
-                s.set(false);
-            }
-        });
-    }
-
-    // Horizontal: Middle → Left, Right
-    {
-        let ls = left_scroll.clone();
-        let rs = right_scroll.clone();
-        let s = syncing.clone();
-        middle_scroll
-            .hadjustment()
-            .connect_value_changed(move |adj| {
-                if !s.get() {
-                    s.set(true);
-                    ls.hadjustment().set_value(adj.value());
-                    rs.hadjustment().set_value(adj.value());
-                    s.set(false);
-                }
-            });
-    }
-
-    // Horizontal: Right → Left, Middle
-    {
-        let ls = left_scroll.clone();
-        let ms = middle_scroll.clone();
-        let s = syncing.clone();
-        right_scroll
-            .hadjustment()
-            .connect_value_changed(move |adj| {
-                if !s.get() {
-                    s.set(true);
-                    ls.hadjustment().set_value(adj.value());
-                    ms.hadjustment().set_value(adj.value());
-                    s.set(false);
-                }
-            });
-    }
-}
+// setup_scroll_sync_3way lives in scroll_sync.rs alongside setup_scroll_sync.
 
 /// Collect non-Equal chunks from both diffs, sorted by middle-file line position.
 /// Returns (`chunk_index`, `is_right_diff`) pairs.
@@ -1033,8 +860,12 @@ pub(super) fn build_merge_view(
 
     toolbar.append(&undo_redo_box);
     toolbar.append(&nav_box);
+    chunk_label.set_width_chars(16);
+    chunk_label.set_xalign(0.0);
     toolbar.append(&chunk_label);
     toolbar.append(&conflict_nav_box);
+    conflict_label.set_width_chars(16);
+    conflict_label.set_xalign(0.0);
     toolbar.append(&conflict_label);
     toolbar.append(&goto_entry);
     toolbar.append(&filter_box);
@@ -1196,133 +1027,13 @@ pub(super) fn build_merge_view(
         }
     };
 
-    // Prev chunk
-    {
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let cur = current_chunk.clone();
-        let ltv = left_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let l_scroll = left_pane.scroll.clone();
-        let mtv = middle_pane.text_view.clone();
-        let mb = middle_buf.clone();
-        let ms = middle_pane.scroll.clone();
-        let rtv = right_pane.text_view.clone();
-        let rb = right_buf.clone();
-        let r_scroll = right_pane.scroll.clone();
-        let lbl = chunk_label.clone();
-        let lf = left_pane.filler_overlay.clone();
-        let mf = middle_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        let nav = navigate_merge_chunk;
-        let upd = update_merge_label;
-        let sens = merge_nav_sensitivity;
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pb = prev_btn.clone();
-        let nb = next_btn.clone();
-        let ng = navigating.clone();
-        prev_btn.connect_clicked(move |_| {
-            nav(
-                &lch.borrow(),
-                &rch.borrow(),
-                &cur,
-                &ng,
-                -1,
-                &ltv,
-                &lb,
-                &l_scroll,
-                &mtv,
-                &mb,
-                &ms,
-                &rtv,
-                &rb,
-                &r_scroll,
-                &lf,
-                &mf,
-                &rf,
-                &av.borrow(),
-                st.borrow().wrap_around_navigation,
-            );
-            upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
-            sens(
-                &pb,
-                &nb,
-                &lch.borrow(),
-                &rch.borrow(),
-                &av.borrow(),
-                &ltv,
-                &rtv,
-                st.borrow().wrap_around_navigation,
-            );
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
-
-    // Next chunk
-    {
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let cur = current_chunk.clone();
-        let ltv = left_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let l_scroll = left_pane.scroll.clone();
-        let mtv = middle_pane.text_view.clone();
-        let mb = middle_buf.clone();
-        let ms = middle_pane.scroll.clone();
-        let rtv = right_pane.text_view.clone();
-        let rb = right_buf.clone();
-        let r_scroll = right_pane.scroll.clone();
-        let lbl = chunk_label.clone();
-        let lf = left_pane.filler_overlay.clone();
-        let mf = middle_pane.filler_overlay.clone();
-        let rf = right_pane.filler_overlay.clone();
-        let nav = navigate_merge_chunk;
-        let upd = update_merge_label;
-        let sens = merge_nav_sensitivity;
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pb = prev_btn.clone();
-        let nb = next_btn.clone();
-        let ng = navigating.clone();
-        next_btn.connect_clicked(move |_| {
-            nav(
-                &lch.borrow(),
-                &rch.borrow(),
-                &cur,
-                &ng,
-                1,
-                &ltv,
-                &lb,
-                &l_scroll,
-                &mtv,
-                &mb,
-                &ms,
-                &rtv,
-                &rb,
-                &r_scroll,
-                &lf,
-                &mf,
-                &rf,
-                &av.borrow(),
-                st.borrow().wrap_around_navigation,
-            );
-            upd(&lbl, &lch.borrow(), &rch.borrow(), cur.get());
-            sens(
-                &pb,
-                &nb,
-                &lch.borrow(),
-                &rch.borrow(),
-                &av.borrow(),
-                &ltv,
-                &rtv,
-                st.borrow().wrap_around_navigation,
-            );
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
+    // Prev/next chunk – delegate to GActions
+    prev_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.prev-chunk", None).ok();
+    });
+    next_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.next-chunk", None).ok();
+    });
 
     // Navigate conflict helper — jumps between `<<<<<<<` markers in middle buf,
     // and syncs left/right panes to the corresponding line.
@@ -1421,150 +1132,31 @@ pub(super) fn build_merge_view(
             nb.set_sensitive(has_next);
         };
 
-    // Prev conflict
-    {
-        let cur = current_conflict.clone();
-        let mtv = middle_pane.text_view.clone();
-        let mb = middle_buf.clone();
-        let ms = middle_pane.scroll.clone();
-        let ltv = left_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let rtv = right_pane.text_view.clone();
-        let rb = right_buf.clone();
-        let rs = right_pane.scroll.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lbl = conflict_label.clone();
-        let nav = navigate_conflict;
-        let upd = update_conflict_label;
-        let csens = conflict_nav_sensitivity;
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pcb = prev_conflict_btn.clone();
-        let ncb = next_conflict_btn.clone();
-        prev_conflict_btn.connect_clicked(move |_| {
-            nav(
-                &cur,
-                -1,
-                &mtv,
-                &mb,
-                &ms,
-                &ltv,
-                &lb,
-                &ls,
-                &rtv,
-                &rb,
-                &rs,
-                &lch,
-                &rch,
-                st.borrow().wrap_around_navigation,
-            );
-            upd(&lbl, &mb, cur.get());
-            csens(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
-
-    // Next conflict
-    {
-        let cur = current_conflict.clone();
-        let mtv = middle_pane.text_view.clone();
-        let mb = middle_buf.clone();
-        let ms = middle_pane.scroll.clone();
-        let ltv = left_pane.text_view.clone();
-        let lb = left_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let rtv = right_pane.text_view.clone();
-        let rb = right_buf.clone();
-        let rs = right_pane.scroll.clone();
-        let lch = left_chunks.clone();
-        let rch = right_chunks.clone();
-        let lbl = conflict_label.clone();
-        let nav = navigate_conflict;
-        let upd = update_conflict_label;
-        let csens = conflict_nav_sensitivity;
-        let av = active_view.clone();
-        let st = settings.clone();
-        let pcb = prev_conflict_btn.clone();
-        let ncb = next_conflict_btn.clone();
-        next_conflict_btn.connect_clicked(move |_| {
-            nav(
-                &cur,
-                1,
-                &mtv,
-                &mb,
-                &ms,
-                &ltv,
-                &lb,
-                &ls,
-                &rtv,
-                &rb,
-                &rs,
-                &lch,
-                &rch,
-                st.borrow().wrap_around_navigation,
-            );
-            upd(&lbl, &mb, cur.get());
-            csens(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
-            let focused_tv = av.borrow().clone();
-            focused_tv.grab_focus();
-        });
-    }
+    // Prev/next conflict – delegate to GActions
+    prev_conflict_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.prev-conflict", None).ok();
+    });
+    next_conflict_btn.connect_clicked(|btn| {
+        btn.activate_action("diff.next-conflict", None).ok();
+    });
 
     // ── Chunk maps for merge view ────────────────────────────────
-    let left_chunk_map = DrawingArea::new();
-    left_chunk_map.set_content_width(12);
-    left_chunk_map.set_vexpand(true);
-    {
-        let lb = left_buf.clone();
-        let ls = left_pane.scroll.clone();
-        let ch = left_chunks.clone();
-        left_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, lb.line_count(), &ls, &ch.borrow(), true);
-        });
-    }
-    {
-        let gesture = GestureClick::new();
-        let ls = left_pane.scroll.clone();
-        let lm = left_chunk_map.clone();
-        gesture.connect_pressed(move |_, _, _x, y| {
-            let h = lm.height() as f64;
-            if h > 0.0 {
-                let adj = ls.vadjustment();
-                let target = (y / h) * adj.upper() - adj.page_size() / 2.0;
-                adj.set_value(target.max(0.0));
-            }
-        });
-        left_chunk_map.add_controller(gesture);
-    }
-
-    let right_chunk_map = DrawingArea::new();
-    right_chunk_map.set_content_width(12);
-    right_chunk_map.set_vexpand(true);
-    {
-        let rb = right_buf.clone();
-        let rs = right_pane.scroll.clone();
-        let ch = right_chunks.clone();
-        right_chunk_map.set_draw_func(move |_area, cr, _w, h| {
-            draw_chunk_map(cr, h as f64, rb.line_count(), &rs, &ch.borrow(), false);
-        });
-    }
-    {
-        let gesture = GestureClick::new();
-        let rs = right_pane.scroll.clone();
-        let rm = right_chunk_map.clone();
-        gesture.connect_pressed(move |_, _, _x, y| {
-            let h = rm.height() as f64;
-            if h > 0.0 {
-                let adj = rs.vadjustment();
-                let target = (y / h) * adj.upper() - adj.page_size() / 2.0;
-                adj.set_value(target.max(0.0));
-            }
-        });
-        right_chunk_map.add_controller(gesture);
-    }
+    let left_chunk_map = create_chunk_map(
+        &left_buf,
+        &left_pane.scroll,
+        &left_chunks,
+        Side::A,
+        Some(&right_chunks),
+        Some((Side::B, Side::A)),
+    );
+    let right_chunk_map = create_chunk_map(
+        &right_buf,
+        &right_pane.scroll,
+        &right_chunks,
+        Side::B,
+        Some(&left_chunks),
+        Some((Side::A, Side::B)),
+    );
 
     // Redraw chunk maps on any scroll change
     for scroll in [&left_pane.scroll, &middle_pane.scroll, &right_pane.scroll] {
@@ -2113,6 +1705,8 @@ pub(super) fn build_merge_view(
                 &rtv,
                 st.borrow().wrap_around_navigation,
             );
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -2172,6 +1766,8 @@ pub(super) fn build_merge_view(
                 &rtv,
                 st.borrow().wrap_around_navigation,
             );
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -2193,6 +1789,7 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pcb = prev_conflict_btn.clone();
         let ncb = next_conflict_btn.clone();
+        let av = active_view.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
                 &cur,
@@ -2212,6 +1809,8 @@ pub(super) fn build_merge_view(
             );
             update_conflict_label(&lbl, &mb, cur.get());
             conflict_nav_sensitivity(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -2233,6 +1832,7 @@ pub(super) fn build_merge_view(
         let st = settings.clone();
         let pcb = prev_conflict_btn.clone();
         let ncb = next_conflict_btn.clone();
+        let av = active_view.clone();
         action.connect_activate(move |_, _| {
             navigate_conflict(
                 &cur,
@@ -2252,6 +1852,8 @@ pub(super) fn build_merge_view(
             );
             update_conflict_label(&lbl, &mb, cur.get());
             conflict_nav_sensitivity(&pcb, &ncb, &mb, &mtv, st.borrow().wrap_around_navigation);
+            let focused_tv = av.borrow().clone();
+            focused_tv.grab_focus();
         });
         action_group.add_action(&action);
     }
@@ -2311,7 +1913,9 @@ pub(super) fn build_merge_view(
             } else {
                 rsp.borrow().clone()
             };
-            open_externally(&path);
+            if !is_blank_path(&path) {
+                open_externally(&path);
+            }
         });
         action_group.add_action(&action);
     }
@@ -2418,64 +2022,7 @@ pub(super) fn build_merge_view(
                 clear_search_tags(&rb);
                 return gtk4::glib::Propagation::Stop;
             }
-            let action_name = if mods.contains(gtk4::gdk::ModifierType::ALT_MASK) {
-                match key {
-                    k if k == gtk4::gdk::Key::Up => Some("prev-chunk"),
-                    k if k == gtk4::gdk::Key::Down => Some("next-chunk"),
-                    k if k == gtk4::gdk::Key::Left => Some("copy-chunk-right-middle"),
-                    k if k == gtk4::gdk::Key::Right => Some("copy-chunk-left-middle"),
-                    _ => None,
-                }
-            } else if has_primary_modifier(mods) {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    if key == gtk4::gdk::Key::o || key == gtk4::gdk::Key::O {
-                        Some("open-externally")
-                    } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
-                        Some("save-as")
-                    } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
-                        Some("save-all")
-                    } else if cfg!(target_os = "macos")
-                        && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
-                    {
-                        Some("find-replace")
-                    } else {
-                        None
-                    }
-                } else if key == gtk4::gdk::Key::s || key == gtk4::gdk::Key::S {
-                    Some("save")
-                } else if key == gtk4::gdk::Key::r || key == gtk4::gdk::Key::R {
-                    Some("refresh")
-                } else if key == gtk4::gdk::Key::e || key == gtk4::gdk::Key::E {
-                    Some("prev-chunk")
-                } else if key == gtk4::gdk::Key::d || key == gtk4::gdk::Key::D {
-                    Some("next-chunk")
-                } else if key == gtk4::gdk::Key::f || key == gtk4::gdk::Key::F {
-                    Some("find")
-                } else if !cfg!(target_os = "macos")
-                    && (key == gtk4::gdk::Key::h || key == gtk4::gdk::Key::H)
-                {
-                    Some("find-replace")
-                } else if key == gtk4::gdk::Key::l || key == gtk4::gdk::Key::L {
-                    Some("go-to-line")
-                } else if key == gtk4::gdk::Key::j || key == gtk4::gdk::Key::J {
-                    Some("prev-conflict")
-                } else if key == gtk4::gdk::Key::k || key == gtk4::gdk::Key::K {
-                    Some("next-conflict")
-                } else {
-                    None
-                }
-            } else if key == gtk4::gdk::Key::F3 {
-                if mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK) {
-                    Some("find-prev")
-                } else {
-                    Some("find-next")
-                }
-            } else if key == gtk4::gdk::Key::F5 {
-                Some("refresh")
-            } else {
-                None
-            };
-            if let Some(name) = action_name {
+            if let Some(name) = map_key_to_action(key, mods, &MERGE_KEYS) {
                 if let Some(action) = ag.lookup_action(name) {
                     action
                         .downcast_ref::<gio::SimpleAction>()
@@ -2629,19 +2176,12 @@ pub(super) fn build_merge_window(
     }
 
     // Window title / tab title
-    let left_name = left_path.file_name().map_or_else(
-        || left_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
+    let title = format!(
+        "{} — {} — {}",
+        display_name(&left_path),
+        display_name(&middle_path),
+        display_name(&right_path),
     );
-    let middle_name = middle_path.file_name().map_or_else(
-        || middle_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let right_name = right_path.file_name().map_or_else(
-        || right_path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let title = format!("{left_name} — {middle_name} — {right_name}");
 
     // ── Window via shared helper ─────────────────────────────────────
     let AppWindow {
@@ -2676,6 +2216,60 @@ pub(super) fn build_merge_window(
 
     mv.middle_view.grab_focus();
     window.present();
+}
+
+/// Open a 3-way merge as a tab in the given notebook.
+pub(super) fn open_merge_comparison_tab(
+    notebook: &Notebook,
+    left_path: PathBuf,
+    middle_path: PathBuf,
+    right_path: PathBuf,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    let mv = build_merge_view(&left_path, &middle_path, &right_path, &[], settings);
+    mv.widget
+        .insert_action_group("diff", Some(&mv.action_group));
+
+    let merge_title = format!(
+        "{} — {} — {}",
+        display_name(&left_path),
+        display_name(&middle_path),
+        display_name(&right_path),
+    );
+
+    let tab_id = NEXT_TAB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    open_tabs.borrow_mut().push(FileTab::Merge {
+        id: tab_id,
+        rel_path: merge_title.clone(),
+        widget: mv.widget.clone(),
+        middle: PaneInfo {
+            path: mv.middle_tab_path,
+            buf: mv.middle_buf.clone(),
+            save: mv.middle_save,
+        },
+    });
+
+    let (tab_label_box, close_btn) = make_closeable_tab_label(&merge_title);
+    let page_num = notebook.append_page(&mv.widget, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+    mv.middle_view.grab_focus();
+
+    {
+        let nb = notebook.clone();
+        let w = mv.widget;
+        let tabs = open_tabs.clone();
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&w) {
+                if let Some(win) = find_window(&nb) {
+                    close_notebook_tab(&win, &nb, &tabs, n);
+                } else {
+                    nb.remove_page(Some(n));
+                    tabs.borrow_mut().retain(|t| t.id() != tab_id);
+                }
+            }
+        });
+    }
 }
 
 // Tests for merge_change_indices and find_conflict_markers are in merge_state.rs

@@ -3,7 +3,7 @@ use super::*;
 
 // ─── VCS Logic (Pure Functions & Helpers) ───────────────────────────────────
 
-pub fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str) -> String {
+pub fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str, extra: &str) -> String {
     let code = match status {
         crate::vcs::VcsStatus::Modified => "M",
         crate::vcs::VcsStatus::Added => "A",
@@ -12,11 +12,16 @@ pub fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str) -> String 
         crate::vcs::VcsStatus::Untracked => "U",
         crate::vcs::VcsStatus::Conflict => "C",
     };
-    format!("{code}{SEP}{rel_path}")
+    format!("{code}{SEP}{rel_path}{SEP}{extra}")
 }
 
-pub fn decode_vcs_row(raw: &str) -> (&str, &str) {
-    raw.split_once(SEP).unwrap_or(("", ""))
+/// Returns `(status_code, rel_path, extra)`.
+pub fn decode_vcs_row(raw: &str) -> (&str, &str, &str) {
+    let mut parts = raw.splitn(3, SEP);
+    let code = parts.next().unwrap_or("");
+    let path = parts.next().unwrap_or("");
+    let extra = parts.next().unwrap_or("");
+    (code, path, extra)
 }
 
 pub fn vcs_status_info(code: &str) -> (&'static str, &'static str) {
@@ -126,7 +131,7 @@ fn make_vcs_status_factory() -> SignalListItemFactory {
         let obj = item.item().and_downcast::<StringObject>().unwrap();
         let raw = obj.string();
         let label = item.child().and_downcast::<Label>().unwrap();
-        let (code, _) = decode_vcs_row(&raw);
+        let (code, _, _) = decode_vcs_row(&raw);
         let (text, css) = vcs_status_info(code);
 
         label.set_label(text);
@@ -166,7 +171,7 @@ fn make_vcs_path_factory() -> SignalListItemFactory {
         let icon = hbox.first_child().and_downcast::<Image>().unwrap();
         let label = icon.next_sibling().and_downcast::<Label>().unwrap();
 
-        let (code, path) = decode_vcs_row(&raw);
+        let (code, path, _) = decode_vcs_row(&raw);
         let (_, css) = vcs_status_info(code);
 
         icon.set_icon_name(Some("text-x-generic-symbolic"));
@@ -182,6 +187,25 @@ fn make_vcs_path_factory() -> SignalListItemFactory {
         if !css.is_empty() {
             label.add_css_class(css);
         }
+    });
+    factory
+}
+
+fn make_vcs_extra_factory() -> SignalListItemFactory {
+    let factory = SignalListItemFactory::new();
+    factory.connect_setup(|_, list_item| {
+        let item = list_item.downcast_ref::<ListItem>().unwrap();
+        let label = Label::new(None);
+        label.set_halign(gtk4::Align::Start);
+        item.set_child(Some(&label));
+    });
+    factory.connect_bind(|_, list_item| {
+        let item = list_item.downcast_ref::<ListItem>().unwrap();
+        let obj = item.item().and_downcast::<StringObject>().unwrap();
+        let raw = obj.string();
+        let label = item.child().and_downcast::<Label>().unwrap();
+        let (_, _, extra) = decode_vcs_row(&raw);
+        label.set_label(extra);
     });
     factory
 }
@@ -396,7 +420,7 @@ pub(super) fn build_vcs_window(
     let store = ListStore::new::<StringObject>();
     let mut initial_encoded = Vec::new();
     for entry in &entries {
-        let encoded = encode_vcs_row(&entry.status, &entry.rel_path);
+        let encoded = encode_vcs_row(&entry.status, &entry.rel_path, &entry.extra);
         store.append(&StringObject::new(&encoded));
         initial_encoded.push(encoded);
     }
@@ -414,6 +438,10 @@ pub(super) fn build_vcs_window(
     let path_col = ColumnViewColumn::new(Some("File"), Some(make_vcs_path_factory()));
     path_col.set_expand(true);
     view.append_column(&path_col);
+
+    let extra_col = ColumnViewColumn::new(Some("Extra"), Some(make_vcs_extra_factory()));
+    extra_col.set_fixed_width(130);
+    view.append_column(&extra_col);
 
     let list_scroll = ScrolledWindow::builder().vexpand(true).child(&view).build();
 
@@ -484,7 +512,7 @@ pub(super) fn build_vcs_window(
             if let Some(item) = item {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let (code, path) = decode_vcs_row(&raw);
+                let (code, path, _) = decode_vcs_row(&raw);
                 open_vcs_diff(&nb, path, code, &tabs, &rr, &td, &st);
             }
         })
@@ -522,7 +550,7 @@ pub(super) fn build_vcs_window(
             let entries = crate::vcs::changed_files(&rr);
             let new_encoded: Vec<String> = entries
                 .iter()
-                .map(|e| encode_vcs_row(&e.status, &e.rel_path))
+                .map(|e| encode_vcs_row(&e.status, &e.rel_path, &e.extra))
                 .collect();
             if new_encoded == *le.borrow() {
                 return;
@@ -582,7 +610,7 @@ pub(super) fn build_vcs_window(
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let (_, rel) = decode_vcs_row(&raw);
+                let (_, rel, _) = decode_vcs_row(&raw);
                 let rel = rel.to_string();
                 if let Some(win) = v
                     .root()
@@ -610,12 +638,50 @@ pub(super) fn build_vcs_window(
         let s = sel.clone();
         let rr = repo_root.clone();
         let r = refresh.clone();
+        let v = view.clone();
         action.connect_activate(move |_, _| {
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let (_, path) = decode_vcs_row(&raw);
-                let _ = crate::vcs::stage_file(&rr, path);
+                let (code, path, _) = decode_vcs_row(&raw);
+                if code == "C" {
+                    let rel = path.to_string();
+                    if let Some(win) = v
+                        .root()
+                        .and_then(|root| root.downcast::<ApplicationWindow>().ok())
+                    {
+                        let rr = rr.clone();
+                        let r = r.clone();
+                        show_confirm_dialog(
+                            &win,
+                            &format!("Stage conflicted file {rel}?"),
+                            "This marks the conflict as resolved.",
+                            "Stage",
+                            move || {
+                                let _ = crate::vcs::stage_file(&rr, &rel);
+                                r();
+                            },
+                        );
+                    }
+                } else {
+                    let _ = crate::vcs::stage_file(&rr, path);
+                    r();
+                }
+            }
+        });
+        vcs_action_group.add_action(&action);
+    }
+    {
+        let action = gio::SimpleAction::new("unstage", None);
+        let s = sel.clone();
+        let rr = repo_root.clone();
+        let r = refresh.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(item) = s.selected_item() {
+                let obj = item.downcast::<StringObject>().unwrap();
+                let raw = obj.string();
+                let (_, path, _) = decode_vcs_row(&raw);
+                let _ = crate::vcs::unstage_file(&rr, path);
                 r();
             }
         });
@@ -631,7 +697,7 @@ pub(super) fn build_vcs_window(
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let (_, rel) = decode_vcs_row(&raw);
+                let (_, rel, _) = decode_vcs_row(&raw);
                 let rel = rel.to_string();
                 if let Some(win) = v
                     .root()
@@ -663,6 +729,7 @@ pub(super) fn build_vcs_window(
     vcs_menu.append(Some("Open Diff"), Some("vcs.open-diff"));
     vcs_menu.append(Some("Discard Changes"), Some("vcs.discard"));
     vcs_menu.append(Some("Stage"), Some("vcs.stage"));
+    vcs_menu.append(Some("Unstage"), Some("vcs.unstage"));
     vcs_menu.append(Some("Trash"), Some("vcs.trash"));
 
     let vcs_popover = PopoverMenu::from_model(Some(&vcs_menu));
@@ -681,6 +748,14 @@ pub(super) fn build_vcs_window(
             .lookup_action("discard")
             .and_downcast::<gio::SimpleAction>()
             .unwrap();
+        let act_stage = vcs_action_group
+            .lookup_action("stage")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_unstage = vcs_action_group
+            .lookup_action("unstage")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
         let act_trash = vcs_action_group
             .lookup_action("trash")
             .and_downcast::<gio::SimpleAction>()
@@ -695,10 +770,14 @@ pub(super) fn build_vcs_window(
             if let Some(item) = s.selected_item() {
                 let obj = item.downcast::<StringObject>().unwrap();
                 let raw = obj.string();
-                let (code, _) = decode_vcs_row(&raw);
+                let (code, _, extra) = decode_vcs_row(&raw);
                 let untracked = code == "U";
+                let has_staged = !extra.is_empty();
+                let fully_staged = extra == "Staged";
                 act_open.set_enabled(!untracked);
                 act_discard.set_enabled(!untracked);
+                act_stage.set_enabled(!untracked && !fully_staged);
+                act_unstage.set_enabled(has_staged);
                 act_trash.set_enabled(untracked);
                 pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                 pop.popup();
@@ -727,10 +806,11 @@ mod tests {
     #[test]
     fn test_vcs_row_encoding() {
         let status = crate::vcs::VcsStatus::Modified;
-        let encoded = encode_vcs_row(&status, "src/main.rs");
-        let (code, path) = decode_vcs_row(&encoded);
+        let encoded = encode_vcs_row(&status, "src/main.rs", "Staged");
+        let (code, path, extra) = decode_vcs_row(&encoded);
         assert_eq!(code, "M");
         assert_eq!(path, "src/main.rs");
+        assert_eq!(extra, "Staged");
     }
 
     #[test]

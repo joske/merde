@@ -194,9 +194,9 @@ pub fn build_find_bar(
         });
     }
 
-    // ── Replace all ──────────────────────────────────────────────────
+    // ── Replace all (only in editable buffers) ────────────────────────
     {
-        let bufs = buffers.clone();
+        let panes_for_replace = all_panes.clone();
         let find_e = find_entry.clone();
         let repl_e = replace_entry.clone();
         replace_all_btn.connect_clicked(move |_| {
@@ -206,7 +206,10 @@ pub fn build_find_bar(
                 return;
             }
             let needle_lower = needle.to_lowercase();
-            for buf in &bufs {
+            for (tv, buf) in &panes_for_replace {
+                if !tv.is_editable() {
+                    continue;
+                }
                 let text = buf
                     .text(&buf.start_iter(), &buf.end_iter(), false)
                     .to_string();
@@ -241,11 +244,14 @@ pub fn build_find_bar(
     {
         let fr = find_revealer.clone();
         let bufs = buffers.clone();
+        let av = active_view.clone();
         find_close_btn.connect_clicked(move |_| {
             fr.set_reveal_child(false);
             for b in &bufs {
                 clear_search_tags(b);
             }
+            let tv = av.borrow().clone();
+            tv.grab_focus();
         });
     }
 
@@ -253,6 +259,7 @@ pub fn build_find_bar(
     for entry in [&find_entry, &replace_entry] {
         let fr = find_revealer.clone();
         let bufs = buffers.clone();
+        let av = active_view.clone();
         let fnb = find_next_btn.clone();
         let fpb = find_prev_btn.clone();
         let key_ctl = EventControllerKey::new();
@@ -262,6 +269,8 @@ pub fn build_find_bar(
                 for b in &bufs {
                     clear_search_tags(b);
                 }
+                let tv = av.borrow().clone();
+                tv.grab_focus();
                 return gtk4::glib::Propagation::Stop;
             }
             if key == gtk4::gdk::Key::F3 {

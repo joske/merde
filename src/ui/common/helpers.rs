@@ -6,6 +6,34 @@ pub fn is_blank_path(p: &Path) -> bool {
     p.as_os_str().is_empty()
 }
 
+/// Extract the file/dir name from a path for display, falling back to the full path.
+pub fn display_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    )
+}
+
+/// Create a notebook tab label with a close button.
+pub fn make_closeable_tab_label(title: &str) -> (GtkBox, Button) {
+    let tab_label_box = GtkBox::new(Orientation::Horizontal, 4);
+    tab_label_box.append(&Label::new(Some(title)));
+    let close_btn = Button::from_icon_name("window-close-symbolic");
+    close_btn.set_has_frame(false);
+    tab_label_box.append(&close_btn);
+    (tab_label_box, close_btn)
+}
+
+fn is_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8192).any(|&b| b == 0)
+}
+
+pub fn find_window(widget: &impl IsA<gtk4::Widget>) -> Option<ApplicationWindow> {
+    widget
+        .root()
+        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+}
+
 /// Read a file as text, returning content and whether it was binary.
 /// Binary files return an empty string and `true`.
 /// Only reads the file once.
@@ -13,7 +41,7 @@ pub fn read_file_content(path: &Path) -> (String, bool) {
     let Ok(bytes) = fs::read(path) else {
         return (String::new(), false);
     };
-    if bytes.iter().take(8192).any(|&b| b == 0) {
+    if is_binary(&bytes) {
         (String::new(), true)
     } else {
         (String::from_utf8_lossy(&bytes).into_owned(), false)
@@ -24,7 +52,7 @@ pub fn read_file_content(path: &Path) -> (String, bool) {
 /// Only reads the file once.
 pub fn read_file_for_reload(path: &Path) -> Option<String> {
     let bytes = fs::read(path).ok()?;
-    if bytes.iter().take(8192).any(|&b| b == 0) {
+    if is_binary(&bytes) {
         return None;
     }
     Some(String::from_utf8_lossy(&bytes).into_owned())
@@ -39,10 +67,7 @@ pub fn save_file(path: &Path, content: &str, save_btn: &Button) {
             save_btn.set_sensitive(false);
         }
         Err(e) => {
-            if let Some(win) = save_btn
-                .root()
-                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-            {
+            if let Some(win) = find_window(save_btn) {
                 show_error_dialog(&win, &format!("Failed to save {}: {e}", path.display()));
             }
         }
@@ -446,9 +471,7 @@ pub fn save_as_pane(
     tab_path: Option<Rc<RefCell<String>>>,
 ) {
     let dialog = gtk4::FileDialog::builder().title("Save As").build();
-    let win = save_btn
-        .root()
-        .and_then(|r| r.downcast::<ApplicationWindow>().ok());
+    let win = find_window(&save_btn);
     dialog.save(win.as_ref(), gio::Cancellable::NONE, move |result| {
         if let Ok(file) = result
             && let Some(path) = file.path()
@@ -466,10 +489,7 @@ pub fn save_as_pane(
                     }
                 }
                 Err(e) => {
-                    if let Some(win) = save_btn
-                        .root()
-                        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                    {
+                    if let Some(win) = find_window(&save_btn) {
                         show_error_dialog(&win, &format!("Failed to save {}: {e}", path.display()));
                     }
                 }
@@ -510,4 +530,84 @@ pub fn move_to_trash(path: &Path) -> Result<(), String> {
             .trash(gio::Cancellable::NONE)
             .map_err(|e| format!("{e}"))
     }
+}
+
+// ─── Key binding helpers ────────────────────────────────────────────────────
+
+pub struct KeyBindings {
+    pub alt_left: &'static str,
+    pub alt_right: &'static str,
+    pub extra_ctrl_shift: &'static [(&'static str, gtk4::gdk::Key, gtk4::gdk::Key)],
+    pub extra_ctrl: &'static [(&'static str, gtk4::gdk::Key, gtk4::gdk::Key)],
+}
+
+pub fn map_key_to_action(
+    key: gtk4::gdk::Key,
+    mods: gtk4::gdk::ModifierType,
+    bindings: &KeyBindings,
+) -> Option<&'static str> {
+    use gtk4::gdk::{Key, ModifierType};
+
+    if mods.contains(ModifierType::ALT_MASK) {
+        return match key {
+            k if k == Key::Up => Some("prev-chunk"),
+            k if k == Key::Down => Some("next-chunk"),
+            k if k == Key::Left => Some(bindings.alt_left),
+            k if k == Key::Right => Some(bindings.alt_right),
+            _ => None,
+        };
+    }
+    if has_primary_modifier(mods) {
+        if mods.contains(ModifierType::SHIFT_MASK) {
+            for &(name, lo, hi) in bindings.extra_ctrl_shift {
+                if key == lo || key == hi {
+                    return Some(name);
+                }
+            }
+            return if key == Key::o || key == Key::O {
+                Some("open-externally")
+            } else if key == Key::s || key == Key::S {
+                Some("save-as")
+            } else if key == Key::l || key == Key::L {
+                Some("save-all")
+            } else if cfg!(target_os = "macos") && (key == Key::h || key == Key::H) {
+                Some("find-replace")
+            } else {
+                None
+            };
+        }
+        for &(name, lo, hi) in bindings.extra_ctrl {
+            if key == lo || key == hi {
+                return Some(name);
+            }
+        }
+        return if key == Key::s || key == Key::S {
+            Some("save")
+        } else if key == Key::r || key == Key::R {
+            Some("refresh")
+        } else if key == Key::e || key == Key::E {
+            Some("prev-chunk")
+        } else if key == Key::d || key == Key::D {
+            Some("next-chunk")
+        } else if key == Key::f || key == Key::F {
+            Some("find")
+        } else if !cfg!(target_os = "macos") && (key == Key::h || key == Key::H) {
+            Some("find-replace")
+        } else if key == Key::l || key == Key::L {
+            Some("go-to-line")
+        } else {
+            None
+        };
+    }
+    if key == Key::F3 {
+        return if mods.contains(ModifierType::SHIFT_MASK) {
+            Some("find-prev")
+        } else {
+            Some("find-next")
+        };
+    }
+    if key == Key::F5 {
+        return Some("refresh");
+    }
+    None
 }

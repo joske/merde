@@ -353,13 +353,17 @@ fn make_name_factory(is_left: bool) -> SignalListItemFactory {
 }
 
 /// Size / Mtime column: plain label at `field_idx` from encoded row.
-fn make_field_factory(is_left: bool, field_idx: usize) -> SignalListItemFactory {
+fn make_field_factory(
+    is_left: bool,
+    field_idx: usize,
+    align: gtk4::Align,
+) -> SignalListItemFactory {
     let factory = SignalListItemFactory::new();
 
-    factory.connect_setup(|_, list_item| {
+    factory.connect_setup(move |_, list_item| {
         let item = list_item.downcast_ref::<ListItem>().unwrap();
         let label = Label::new(None);
-        label.set_halign(gtk4::Align::End);
+        label.set_halign(align);
         item.set_child(Some(&label));
     });
 
@@ -404,8 +408,18 @@ pub(super) fn build_dir_tab(
         Rc::new(RefCell::new(labels.first().cloned()));
     let right_label_override: Rc<RefCell<Option<String>>> =
         Rc::new(RefCell::new(labels.get(1).cloned()));
-    let left_dir = Rc::new(RefCell::new(left_dir.to_string_lossy().into_owned()));
-    let right_dir = Rc::new(RefCell::new(right_dir.to_string_lossy().into_owned()));
+    let left_dir = Rc::new(RefCell::new(
+        std::fs::canonicalize(&left_dir)
+            .unwrap_or(left_dir)
+            .to_string_lossy()
+            .into_owned(),
+    ));
+    let right_dir = Rc::new(RefCell::new(
+        std::fs::canonicalize(&right_dir)
+            .unwrap_or(right_dir)
+            .to_string_lossy()
+            .into_owned(),
+    ));
 
     // Build tree data (Rc<RefCell<…>> so the watcher callback can rebuild)
     let children_map = Rc::new(RefCell::new(HashMap::new()));
@@ -460,13 +474,21 @@ pub(super) fn build_dir_tab(
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(true)));
         col.set_expand(true);
+        col.set_resizable(true);
         left_view.append_column(&col);
-        let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(true, 4)));
+        let col = ColumnViewColumn::new(
+            Some("Size"),
+            Some(make_field_factory(true, 4, gtk4::Align::End)),
+        );
         col.set_fixed_width(80);
+        col.set_resizable(true);
         left_view.append_column(&col);
-        let col =
-            ColumnViewColumn::new(Some("Modification time"), Some(make_field_factory(true, 5)));
-        col.set_fixed_width(180);
+        let col = ColumnViewColumn::new(
+            Some("Modification time"),
+            Some(make_field_factory(true, 5, gtk4::Align::Start)),
+        );
+        col.set_fixed_width(200);
+        col.set_resizable(true);
         left_view.append_column(&col);
     }
 
@@ -477,15 +499,21 @@ pub(super) fn build_dir_tab(
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
         col.set_expand(true);
+        col.set_resizable(true);
         right_view.append_column(&col);
-        let col = ColumnViewColumn::new(Some("Size"), Some(make_field_factory(false, 6)));
+        let col = ColumnViewColumn::new(
+            Some("Size"),
+            Some(make_field_factory(false, 6, gtk4::Align::End)),
+        );
         col.set_fixed_width(80);
+        col.set_resizable(true);
         right_view.append_column(&col);
         let col = ColumnViewColumn::new(
             Some("Modification time"),
-            Some(make_field_factory(false, 7)),
+            Some(make_field_factory(false, 7, gtk4::Align::Start)),
         );
-        col.set_fixed_width(180);
+        col.set_fixed_width(200);
+        col.set_resizable(true);
         right_view.append_column(&col);
     }
 
@@ -498,36 +526,50 @@ pub(super) fn build_dir_tab(
     // they are created), since ColumnView content is clipped by its parent.
     let left_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
     let right_scroll_slot: Rc<RefCell<Option<ScrolledWindow>>> = Rc::new(RefCell::new(None));
-    {
+    for (own_view, other_view, own_scroll, other_scroll, is_left) in [
+        (
+            &left_view,
+            &right_view,
+            &left_scroll_slot,
+            &right_scroll_slot,
+            true,
+        ),
+        (
+            &right_view,
+            &left_view,
+            &right_scroll_slot,
+            &left_scroll_slot,
+            false,
+        ),
+    ] {
         let fl = focused_left.clone();
-        let lv = left_view.clone();
-        let rv = right_view.clone();
+        let ov = own_view.clone();
+        let otv = other_view.clone();
         let sel = dir_sel.clone();
-        let ls = left_scroll_slot.clone();
-        let rs = right_scroll_slot.clone();
+        let os = own_scroll.clone();
+        let ots = other_scroll.clone();
         let fc = EventControllerFocus::new();
         fc.connect_enter(move |_| {
-            if fl.get() {
+            if fl.get() == is_left {
                 return;
             }
-            fl.set(true);
-            lv.set_opacity(1.0);
-            rv.set_opacity(0.55);
-            if let Some(sw) = ls.borrow().as_ref() {
+            fl.set(is_left);
+            ov.set_opacity(1.0);
+            otv.set_opacity(0.55);
+            if let Some(sw) = os.borrow().as_ref() {
                 sw.add_css_class("dir-pane-focused");
                 sw.remove_css_class("dir-pane-inactive");
             }
-            if let Some(sw) = rs.borrow().as_ref() {
+            if let Some(sw) = ots.borrow().as_ref() {
                 sw.remove_css_class("dir-pane-focused");
                 sw.add_css_class("dir-pane-inactive");
             }
-            // Sync keyboard cursor to selection, then restore scroll position
             let pos = sel.selected();
-            let vadj = lv
+            let vadj = ov
                 .ancestor(ScrolledWindow::static_type())
                 .and_downcast::<ScrolledWindow>()
                 .map(|sw| (sw.vadjustment().value(), sw));
-            let v = lv.clone();
+            let v = ov.clone();
             gtk4::glib::idle_add_local_once(move || {
                 v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
                 if let Some((val, sw)) = vadj {
@@ -538,47 +580,7 @@ pub(super) fn build_dir_tab(
                 }
             });
         });
-        left_view.add_controller(fc);
-        let fl = focused_left.clone();
-        let lv = left_view.clone();
-        let rv = right_view.clone();
-        let sel = dir_sel.clone();
-        let ls = left_scroll_slot.clone();
-        let rs = right_scroll_slot.clone();
-        let fc = EventControllerFocus::new();
-        fc.connect_enter(move |_| {
-            if !fl.get() {
-                return;
-            }
-            fl.set(false);
-            rv.set_opacity(1.0);
-            lv.set_opacity(0.55);
-            if let Some(sw) = rs.borrow().as_ref() {
-                sw.add_css_class("dir-pane-focused");
-                sw.remove_css_class("dir-pane-inactive");
-            }
-            if let Some(sw) = ls.borrow().as_ref() {
-                sw.remove_css_class("dir-pane-focused");
-                sw.add_css_class("dir-pane-inactive");
-            }
-            // Sync keyboard cursor to selection, then restore scroll position
-            let pos = sel.selected();
-            let vadj = rv
-                .ancestor(ScrolledWindow::static_type())
-                .and_downcast::<ScrolledWindow>()
-                .map(|sw| (sw.vadjustment().value(), sw));
-            let v = rv.clone();
-            gtk4::glib::idle_add_local_once(move || {
-                v.scroll_to(pos, None, gtk4::ListScrollFlags::FOCUS, None);
-                if let Some((val, sw)) = vadj {
-                    let sw2 = sw.clone();
-                    gtk4::glib::idle_add_local_once(move || {
-                        sw2.vadjustment().set_value(val);
-                    });
-                }
-            });
-        });
-        right_view.add_controller(fc);
+        own_view.add_controller(fc);
     }
 
     // Left/Right arrow keys switch between panes
@@ -661,10 +663,23 @@ pub(super) fn build_dir_tab(
     left_header.set_tooltip_text(Some(&*left_dir.borrow()));
     left_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     left_header.set_hexpand(true);
-    left_header.set_margin_start(6);
-    left_header.set_margin_end(6);
-    left_header.set_margin_top(4);
-    left_header.set_margin_bottom(4);
+    let left_copy_btn = Button::from_icon_name("edit-copy-symbolic");
+    left_copy_btn.set_has_frame(false);
+    left_copy_btn.set_tooltip_text(Some("Copy path"));
+    {
+        let ld = left_dir.clone();
+        left_copy_btn.connect_clicked(move |btn| {
+            btn.clipboard().set_text(&ld.borrow());
+        });
+    }
+    let left_header_box = GtkBox::new(Orientation::Horizontal, 0);
+    left_header_box.set_margin_start(6);
+    left_header_box.set_margin_end(2);
+    left_header_box.set_margin_top(4);
+    left_header_box.set_margin_bottom(4);
+    left_header_box.append(&left_header);
+    left_header_box.append(&left_copy_btn);
+
     let right_header_text = match *right_label_override.borrow() {
         Some(ref l) => l.clone(),
         None => shortened_path(Path::new(&*right_dir.borrow())),
@@ -673,17 +688,29 @@ pub(super) fn build_dir_tab(
     right_header.set_tooltip_text(Some(&*right_dir.borrow()));
     right_header.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
     right_header.set_hexpand(true);
-    right_header.set_margin_start(6);
-    right_header.set_margin_end(6);
-    right_header.set_margin_top(4);
-    right_header.set_margin_bottom(4);
+    let right_copy_btn = Button::from_icon_name("edit-copy-symbolic");
+    right_copy_btn.set_has_frame(false);
+    right_copy_btn.set_tooltip_text(Some("Copy path"));
+    {
+        let rd = right_dir.clone();
+        right_copy_btn.connect_clicked(move |btn| {
+            btn.clipboard().set_text(&rd.borrow());
+        });
+    }
+    let right_header_box = GtkBox::new(Orientation::Horizontal, 0);
+    right_header_box.set_margin_start(6);
+    right_header_box.set_margin_end(2);
+    right_header_box.set_margin_top(4);
+    right_header_box.set_margin_bottom(4);
+    right_header_box.append(&right_header);
+    right_header_box.append(&right_copy_btn);
 
     let left_pane_box = GtkBox::new(Orientation::Vertical, 0);
-    left_pane_box.append(&left_header);
+    left_pane_box.append(&left_header_box);
     left_scroll.set_vexpand(true);
     left_pane_box.append(&left_scroll);
     let right_pane_box = GtkBox::new(Orientation::Vertical, 0);
-    right_pane_box.append(&right_header);
+    right_pane_box.append(&right_header_box);
     right_scroll.set_vexpand(true);
     right_pane_box.append(&right_scroll);
 
@@ -711,6 +738,16 @@ pub(super) fn build_dir_tab(
     dir_toolbar.set_margin_bottom(4);
     let dir_swap_btn = Button::from_icon_name("object-flip-horizontal-symbolic");
     dir_swap_btn.set_tooltip_text(Some("Swap panes"));
+
+    let collapse_btn = Button::from_icon_name("format-indent-less-symbolic");
+    collapse_btn.set_tooltip_text(Some("Collapse all"));
+    let expand_btn = Button::from_icon_name("format-indent-more-symbolic");
+    expand_btn.set_tooltip_text(Some("Expand all"));
+    let tree_box = GtkBox::new(Orientation::Horizontal, 0);
+    tree_box.add_css_class("linked");
+    tree_box.append(&collapse_btn);
+    tree_box.append(&expand_btn);
+
     let dir_prefs_btn = Button::from_icon_name("preferences-system-symbolic");
     dir_prefs_btn.set_tooltip_text(Some(&format!("Preferences ({}+,)", primary_key_name())));
     dir_prefs_btn.set_action_name(Some("win.prefs"));
@@ -718,6 +755,7 @@ pub(super) fn build_dir_tab(
     dir_toolbar.append(&dir_copy_box);
     dir_toolbar.append(&delete_btn);
     dir_toolbar.append(&dir_swap_btn);
+    dir_toolbar.append(&tree_box);
     dir_toolbar.append(&dir_prefs_btn);
 
     // Helper: rescan directories and refresh the tree model (async)
@@ -890,10 +928,7 @@ pub(super) fn build_dir_tab(
             rh.set_text(&right_text);
             rh.set_tooltip_text(Some(&*rd.borrow()));
             // Update window title
-            if let Some(win) = btn
-                .root()
-                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-            {
+            if let Some(win) = find_window(btn) {
                 let ln = Path::new(ld.borrow().as_str())
                     .file_name()
                     .map_or_else(|| ld.borrow().clone(), |n| n.to_string_lossy().into_owned());
@@ -921,84 +956,45 @@ pub(super) fn build_dir_tab(
 
     // Directory action group — used by both keyboard shortcuts and toolbar buttons
     let dir_action_group = gio::SimpleActionGroup::new();
-    {
-        let action = gio::SimpleAction::new("folder-copy-left", None);
+    for (name, src_dir, dst_dir, only_status) in [
+        (
+            "folder-copy-left",
+            &right_dir,
+            &left_dir,
+            FileStatus::RightOnly,
+        ),
+        (
+            "folder-copy-right",
+            &left_dir,
+            &right_dir,
+            FileStatus::LeftOnly,
+        ),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
         let get_row = get_selected_row.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
+        let sd = src_dir.clone();
+        let dd = dst_dir.clone();
         let reload = reload_dir.clone();
         let lv = left_view.clone();
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let info = DirRowInfo::decode(&raw);
-                if info.status == FileStatus::RightOnly || info.status == FileStatus::Different {
+                if info.status == only_status || info.status == FileStatus::Different {
                     let rel = info.rel_path;
-                    let src = Path::new(rd.borrow().as_str()).join(&rel);
-                    let dst = Path::new(ld.borrow().as_str()).join(&rel);
+                    let src = Path::new(sd.borrow().as_str()).join(&rel);
+                    let dst = Path::new(dd.borrow().as_str()).join(&rel);
                     let reload = reload.clone();
                     let lv2 = lv.clone();
                     let do_copy = move || {
                         if let Err(e) = copy_path_recursive(&src, &dst)
-                            && let Some(win) = lv2
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                            && let Some(win) = find_window(&lv2)
                         {
                             show_error_dialog(&win, &format!("Copy failed: {e}"));
                         }
                         reload();
                     };
                     if info.status == FileStatus::Different {
-                        if let Some(win) = lv
-                            .root()
-                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
-                            show_confirm_dialog(
-                                &win,
-                                &format!("Overwrite {rel}?"),
-                                "The destination file will be replaced.",
-                                "Overwrite",
-                                do_copy,
-                            );
-                        }
-                    } else {
-                        do_copy();
-                    }
-                }
-            }
-        });
-        dir_action_group.add_action(&action);
-    }
-    {
-        let action = gio::SimpleAction::new("folder-copy-right", None);
-        let get_row = get_selected_row.clone();
-        let ld = left_dir.clone();
-        let rd = right_dir.clone();
-        let reload = reload_dir.clone();
-        let lv = left_view.clone();
-        action.connect_activate(move |_, _| {
-            if let Some(raw) = get_row() {
-                let info = DirRowInfo::decode(&raw);
-                if info.status == FileStatus::LeftOnly || info.status == FileStatus::Different {
-                    let rel = info.rel_path;
-                    let src = Path::new(ld.borrow().as_str()).join(&rel);
-                    let dst = Path::new(rd.borrow().as_str()).join(&rel);
-                    let reload = reload.clone();
-                    let lv2 = lv.clone();
-                    let do_copy = move || {
-                        if let Err(e) = copy_path_recursive(&src, &dst)
-                            && let Some(win) = lv2
-                                .root()
-                                .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
-                            show_error_dialog(&win, &format!("Copy failed: {e}"));
-                        }
-                        reload();
-                    };
-                    if info.status == FileStatus::Different {
-                        if let Some(win) = lv
-                            .root()
-                            .and_then(|r| r.downcast::<ApplicationWindow>().ok())
-                        {
+                        if let Some(win) = find_window(&lv) {
                             show_confirm_dialog(
                                 &win,
                                 &format!("Overwrite {rel}?"),
@@ -1038,9 +1034,7 @@ pub(super) fn build_dir_tab(
                     }
                 };
                 if let Some(p) = path
-                    && let Some(win) = lv
-                        .root()
-                        .and_then(|r| r.downcast::<ApplicationWindow>().ok())
+                    && let Some(win) = find_window(&lv)
                 {
                     let reload = reload.clone();
                     show_confirm_dialog(
@@ -1071,19 +1065,8 @@ pub(super) fn build_dir_tab(
         action.connect_activate(move |_, _| {
             if let Some(raw) = get_row() {
                 let info = DirRowInfo::decode(&raw);
-                let lp = Path::new(ld.borrow().as_str()).join(&info.rel_path);
-                let rp = Path::new(rd.borrow().as_str()).join(&info.rel_path);
-                let path = match info.status {
-                    FileStatus::LeftOnly => lp,
-                    FileStatus::RightOnly => rp,
-                    FileStatus::Different | FileStatus::Same => {
-                        if fl.get() {
-                            lp
-                        } else {
-                            rp
-                        }
-                    }
-                };
+                let dir = if fl.get() { &ld } else { &rd };
+                let path = Path::new(dir.borrow().as_str()).join(&info.rel_path);
                 let abs = path.canonicalize().unwrap_or(path);
                 open_externally(&abs);
             }
@@ -1096,7 +1079,11 @@ pub(super) fn build_dir_tab(
         let action = gio::SimpleAction::new("folder-collapse-all", None);
         let tm = tree_model.clone();
         action.connect_activate(move |_, _| {
-            for i in 0..tm.n_items() {
+            // Collapse in reverse so removing children doesn't shift
+            // indices we haven't visited yet.
+            let mut i = tm.n_items();
+            while i > 0 {
+                i -= 1;
                 if let Some(item) = tm.item(i)
                     && let Ok(row) = item.downcast::<TreeListRow>()
                     && row.is_expanded()
@@ -1186,6 +1173,18 @@ pub(super) fn build_dir_tab(
         let dag = dir_action_group.clone();
         delete_btn.connect_clicked(move |_| {
             dag.activate_action("folder-delete", None);
+        });
+    }
+    {
+        let dag = dir_action_group.clone();
+        collapse_btn.connect_clicked(move |_| {
+            dag.activate_action("folder-collapse-all", None);
+        });
+    }
+    {
+        let dag = dir_action_group.clone();
+        expand_btn.connect_clicked(move |_| {
+            dag.activate_action("folder-expand-all", None);
         });
     }
 
@@ -1279,13 +1278,29 @@ pub(super) fn build_dir_tab(
             .and_downcast::<gio::SimpleAction>()
             .unwrap();
 
-        let setup_dir_ctx = |view: &ColumnView, popover: PopoverMenu| {
+        let act_del = dir_action_group
+            .lookup_action("folder-delete")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_ext = dir_action_group
+            .lookup_action("folder-open-externally")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+        let act_path = dir_action_group
+            .lookup_action("folder-copy-path")
+            .and_downcast::<gio::SimpleAction>()
+            .unwrap();
+
+        let setup_dir_ctx = |view: &ColumnView, popover: PopoverMenu, is_left: bool| {
             let gesture = GestureClick::new();
             gesture.set_button(3);
             let get_row = get_selected_row.clone();
             let ao = act_open.clone();
             let al = act_left.clone();
             let ar = act_right.clone();
+            let ad = act_del.clone();
+            let ae = act_ext.clone();
+            let ap = act_path.clone();
             let pop = popover;
             let sel = dir_sel.clone();
             let tm = tree_model.clone();
@@ -1298,23 +1313,33 @@ pub(super) fn build_dir_tab(
                     let info = DirRowInfo::decode(&raw);
                     let is_dir = info.is_dir;
                     let status = info.status;
+                    let exists_on_this_side = match status {
+                        FileStatus::LeftOnly => is_left,
+                        FileStatus::RightOnly => !is_left,
+                        _ => true,
+                    };
                     ao.set_enabled(
                         !is_dir && (status == FileStatus::Different || status == FileStatus::Same),
                     );
                     al.set_enabled(
-                        status == FileStatus::RightOnly || status == FileStatus::Different,
+                        exists_on_this_side
+                            && (status == FileStatus::RightOnly || status == FileStatus::Different),
                     );
                     ar.set_enabled(
-                        status == FileStatus::LeftOnly || status == FileStatus::Different,
+                        exists_on_this_side
+                            && (status == FileStatus::LeftOnly || status == FileStatus::Different),
                     );
+                    ad.set_enabled(exists_on_this_side);
+                    ae.set_enabled(!is_dir && exists_on_this_side);
+                    ap.set_enabled(exists_on_this_side);
                     pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                     pop.popup();
                 }
             });
             view.add_controller(gesture);
         };
-        setup_dir_ctx(&left_view, dir_popover_l);
-        setup_dir_ctx(&right_view, dir_popover_r);
+        setup_dir_ctx(&left_view, dir_popover_l, true);
+        setup_dir_ctx(&right_view, dir_popover_r, false);
     }
 
     // Shared activate logic — used by both Enter key and double-click
@@ -1459,6 +1484,58 @@ pub(super) fn build_dir_tab(
     let title = format!("{left_name} — {right_name}");
 
     (dir_tab, dir_watcher, left_view, title)
+}
+
+/// Open a directory comparison as a tab in the given notebook.
+pub(super) fn open_dir_comparison_tab(
+    notebook: &Notebook,
+    left_dir: PathBuf,
+    right_dir: PathBuf,
+    open_tabs: &Rc<RefCell<Vec<FileTab>>>,
+    settings: &Rc<RefCell<Settings>>,
+) {
+    let (dir_widget, dir_watcher, left_view, dir_title) = build_dir_tab(
+        left_dir,
+        right_dir,
+        &[],
+        Rc::clone(settings),
+        notebook,
+        open_tabs,
+    );
+
+    let (tab_label_box, close_btn) = make_closeable_tab_label(&dir_title);
+    let page_num = notebook.append_page(&dir_widget, Some(&tab_label_box));
+    notebook.set_current_page(Some(page_num));
+    left_view.grab_focus();
+
+    // Stop watcher when tab is removed
+    {
+        let dw = dir_widget.downgrade();
+        let wa = dir_watcher.alive.clone();
+        let handler_id: Rc<RefCell<Option<gtk4::glib::SignalHandlerId>>> =
+            Rc::new(RefCell::new(None));
+        let hid = handler_id.clone();
+        let id = notebook.connect_page_removed(move |nb, child, _| {
+            if let Some(w) = dw.upgrade()
+                && *child == w
+            {
+                wa.set(false);
+                if let Some(id) = hid.borrow_mut().take() {
+                    nb.disconnect(id);
+                }
+            }
+        });
+        handler_id.borrow_mut().replace(id);
+    }
+    {
+        let nb = notebook.clone();
+        let dw = dir_widget;
+        close_btn.connect_clicked(move |_| {
+            if let Some(n) = nb.page_num(&dw) {
+                nb.remove_page(Some(n));
+            }
+        });
+    }
 }
 
 // ─── Directory comparison window ───────────────────────────────────────────
