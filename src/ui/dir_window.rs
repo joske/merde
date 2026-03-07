@@ -474,18 +474,21 @@ pub(super) fn build_dir_tab(
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(true)));
         col.set_expand(true);
+        col.set_resizable(true);
         left_view.append_column(&col);
         let col = ColumnViewColumn::new(
             Some("Size"),
             Some(make_field_factory(true, 4, gtk4::Align::End)),
         );
         col.set_fixed_width(80);
+        col.set_resizable(true);
         left_view.append_column(&col);
         let col = ColumnViewColumn::new(
             Some("Modification time"),
             Some(make_field_factory(true, 5, gtk4::Align::Start)),
         );
         col.set_fixed_width(200);
+        col.set_resizable(true);
         left_view.append_column(&col);
     }
 
@@ -496,18 +499,21 @@ pub(super) fn build_dir_tab(
     {
         let col = ColumnViewColumn::new(Some("Name"), Some(make_name_factory(false)));
         col.set_expand(true);
+        col.set_resizable(true);
         right_view.append_column(&col);
         let col = ColumnViewColumn::new(
             Some("Size"),
             Some(make_field_factory(false, 6, gtk4::Align::End)),
         );
         col.set_fixed_width(80);
+        col.set_resizable(true);
         right_view.append_column(&col);
         let col = ColumnViewColumn::new(
             Some("Modification time"),
             Some(make_field_factory(false, 7, gtk4::Align::Start)),
         );
         col.set_fixed_width(200);
+        col.set_resizable(true);
         right_view.append_column(&col);
     }
 
