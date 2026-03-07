@@ -15,7 +15,13 @@ pub fn draw_chunk_map(
         return;
     }
 
-    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, side, conflict_flags) {
+    for rect in &diff_state::compute_chunk_map_rects(
+        chunks,
+        total_lines as usize,
+        height,
+        side,
+        conflict_flags,
+    ) {
         let (r, g, b) = if rect.conflict {
             band_conflict()
         } else {

@@ -122,10 +122,7 @@ pub fn parse_porcelain_nul(raw: &[u8]) -> Vec<VcsEntry> {
 
         let x_byte = xy.as_bytes()[0];
         let y_byte = xy.as_bytes()[1];
-        let extra = if status != VcsStatus::Conflict
-            && x_byte != b' '
-            && x_byte != b'?'
-        {
+        let extra = if status != VcsStatus::Conflict && x_byte != b' ' && x_byte != b'?' {
             if y_byte != b' ' && y_byte != b'?' {
                 "Partially staged".to_string()
             } else {

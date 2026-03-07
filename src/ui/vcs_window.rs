@@ -3,11 +3,7 @@ use super::*;
 
 // ─── VCS Logic (Pure Functions & Helpers) ───────────────────────────────────
 
-pub fn encode_vcs_row(
-    status: &crate::vcs::VcsStatus,
-    rel_path: &str,
-    extra: &str,
-) -> String {
+pub fn encode_vcs_row(status: &crate::vcs::VcsStatus, rel_path: &str, extra: &str) -> String {
     let code = match status {
         crate::vcs::VcsStatus::Modified => "M",
         crate::vcs::VcsStatus::Added => "A",
