@@ -13,6 +13,7 @@ pub(super) struct ChunkMapRect {
     pub y_start: f64,
     pub height: f64,
     pub tag: DiffTag,
+    pub conflict: bool,
 }
 
 /// Which side of a diff chunk to use for line comparisons.
@@ -218,6 +219,7 @@ pub(super) fn compute_chunk_map_rects(
     total_lines: usize,
     map_height: f64,
     side: Side,
+    conflict_flags: &[bool],
 ) -> Vec<ChunkMapRect> {
     if total_lines == 0 || map_height <= 0.0 {
         return Vec::new();
@@ -225,8 +227,9 @@ pub(super) fn compute_chunk_map_rects(
     let total = total_lines as f64;
     chunks
         .iter()
-        .filter(|c| c.tag != DiffTag::Equal)
-        .map(|c| {
+        .enumerate()
+        .filter(|(_, c)| c.tag != DiffTag::Equal)
+        .map(|(i, c)| {
             let (start, end) = if side == Side::A {
                 (c.start_a, c.end_a)
             } else {
@@ -238,6 +241,7 @@ pub(super) fn compute_chunk_map_rects(
                 y_start,
                 height: raw_height.max(2.0),
                 tag: c.tag,
+                conflict: conflict_flags.get(i).copied().unwrap_or(false),
             }
         })
         .collect()
@@ -661,7 +665,7 @@ mod tests {
     #[test]
     fn chunk_map_empty_chunks() {
         assert_eq!(
-            compute_chunk_map_rects(&[], 100, 500.0, Side::A),
+            compute_chunk_map_rects(&[], 100, 500.0, Side::A, &[]),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -670,7 +674,7 @@ mod tests {
     fn chunk_map_zero_total_lines() {
         let chunks = [rep(0, 5, 0, 3)];
         assert_eq!(
-            compute_chunk_map_rects(&chunks, 0, 500.0, Side::A),
+            compute_chunk_map_rects(&chunks, 0, 500.0, Side::A, &[]),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -679,7 +683,7 @@ mod tests {
     fn chunk_map_zero_map_height() {
         let chunks = [rep(0, 5, 0, 3)];
         assert_eq!(
-            compute_chunk_map_rects(&chunks, 100, 0.0, Side::A),
+            compute_chunk_map_rects(&chunks, 100, 0.0, Side::A, &[]),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -688,7 +692,7 @@ mod tests {
     fn chunk_map_negative_map_height() {
         let chunks = [rep(0, 5, 0, 3)];
         assert_eq!(
-            compute_chunk_map_rects(&chunks, 100, -10.0, Side::A),
+            compute_chunk_map_rects(&chunks, 100, -10.0, Side::A, &[]),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -697,7 +701,7 @@ mod tests {
     fn chunk_map_skips_equal() {
         let chunks = [eq(0, 10, 0, 10)];
         assert_eq!(
-            compute_chunk_map_rects(&chunks, 10, 100.0, Side::A),
+            compute_chunk_map_rects(&chunks, 10, 100.0, Side::A, &[]),
             Vec::<ChunkMapRect>::new()
         );
     }
@@ -706,7 +710,7 @@ mod tests {
     fn chunk_map_basic_left() {
         // 100 total lines, 1000px height, replace chunk lines 10..20 on side A
         let chunks = [eq(0, 10, 0, 10), rep(10, 20, 10, 15), eq(20, 100, 15, 85)];
-        let rects = compute_chunk_map_rects(&chunks, 100, 1000.0, Side::A);
+        let rects = compute_chunk_map_rects(&chunks, 100, 1000.0, Side::A, &[]);
         assert_eq!(rects.len(), 1);
         assert!((rects[0].y_start - 100.0).abs() < f64::EPSILON);
         assert!((rects[0].height - 100.0).abs() < f64::EPSILON);
@@ -717,7 +721,7 @@ mod tests {
     fn chunk_map_basic_right() {
         // Same chunks, but using side B (start_b=10, end_b=15)
         let chunks = [eq(0, 10, 0, 10), rep(10, 20, 10, 15), eq(20, 100, 15, 85)];
-        let rects = compute_chunk_map_rects(&chunks, 85, 850.0, Side::B);
+        let rects = compute_chunk_map_rects(&chunks, 85, 850.0, Side::B, &[]);
         assert_eq!(rects.len(), 1);
         // y_start = (10/85)*850 = 100.0
         assert!((rects[0].y_start - 100.0).abs() < f64::EPSILON);
@@ -730,7 +734,7 @@ mod tests {
     fn chunk_map_minimum_height_clamp() {
         // 1 line out of 10000 at 100px -> raw height = 0.01, clamped to 2.0
         let chunks = [rep(500, 501, 500, 501)];
-        let rects = compute_chunk_map_rects(&chunks, 10000, 100.0, Side::A);
+        let rects = compute_chunk_map_rects(&chunks, 10000, 100.0, Side::A, &[]);
         assert_eq!(rects.len(), 1);
         assert!((rects[0].height - 2.0).abs() < f64::EPSILON);
     }
@@ -744,7 +748,7 @@ mod tests {
             ins(15, 15, 12, 14),
             eq(15, 20, 14, 19),
         ];
-        let rects = compute_chunk_map_rects(&chunks, 20, 200.0, Side::A);
+        let rects = compute_chunk_map_rects(&chunks, 20, 200.0, Side::A, &[]);
         assert_eq!(rects.len(), 2);
         assert_eq!(rects[0].tag, DiffTag::Delete);
         assert_eq!(rects[1].tag, DiffTag::Insert);

@@ -9,16 +9,21 @@ pub fn draw_chunk_map(
     scroll: &ScrolledWindow,
     chunks: &[DiffChunk],
     side: Side,
+    conflict_flags: &[bool],
 ) {
     if total_lines <= 0 || height <= 0.0 {
         return;
     }
 
-    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, side) {
-        let (r, g, b) = match rect.tag {
-            DiffTag::Replace => band_replace(),
-            DiffTag::Delete | DiffTag::Insert => band_insert(),
-            DiffTag::Equal => continue,
+    for rect in &diff_state::compute_chunk_map_rects(chunks, total_lines as usize, height, side, conflict_flags) {
+        let (r, g, b) = if rect.conflict {
+            band_conflict()
+        } else {
+            match rect.tag {
+                DiffTag::Replace => band_replace(),
+                DiffTag::Delete | DiffTag::Insert => band_insert(),
+                DiffTag::Equal => continue,
+            }
         };
         cr.set_source_rgba(r, g, b, 0.7);
         cr.rectangle(1.0, rect.y_start, 10.0, rect.height);
@@ -54,6 +59,8 @@ pub fn create_chunk_map(
     scroll: &ScrolledWindow,
     chunks: &Rc<RefCell<Vec<DiffChunk>>>,
     side: Side,
+    other_chunks: Option<&Rc<RefCell<Vec<DiffChunk>>>>,
+    other_mid: Option<(Side, Side)>,
 ) -> DrawingArea {
     let map = DrawingArea::new();
     map.set_content_width(12);
@@ -62,7 +69,14 @@ pub fn create_chunk_map(
         let buf = buf.clone();
         let scroll = scroll.clone();
         let chunks = chunks.clone();
+        let other_chunks = other_chunks.cloned();
         map.set_draw_func(move |area, cr, _w, h| {
+            let flags: Vec<bool> =
+                if let (Some(oc), Some((my_mid, oc_mid))) = (&other_chunks, other_mid) {
+                    conflict_flags(&chunks.borrow(), my_mid, &oc.borrow(), oc_mid)
+                } else {
+                    Vec::new()
+                };
             draw_chunk_map(
                 area,
                 cr,
@@ -71,6 +85,7 @@ pub fn create_chunk_map(
                 &scroll,
                 &chunks.borrow(),
                 side,
+                &flags,
             );
         });
     }

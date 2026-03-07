@@ -1141,8 +1141,22 @@ pub(super) fn build_merge_view(
     });
 
     // ── Chunk maps for merge view ────────────────────────────────
-    let left_chunk_map = create_chunk_map(&left_buf, &left_pane.scroll, &left_chunks, Side::A);
-    let right_chunk_map = create_chunk_map(&right_buf, &right_pane.scroll, &right_chunks, Side::B);
+    let left_chunk_map = create_chunk_map(
+        &left_buf,
+        &left_pane.scroll,
+        &left_chunks,
+        Side::A,
+        Some(&right_chunks),
+        Some((Side::B, Side::A)),
+    );
+    let right_chunk_map = create_chunk_map(
+        &right_buf,
+        &right_pane.scroll,
+        &right_chunks,
+        Side::B,
+        Some(&left_chunks),
+        Some((Side::A, Side::B)),
+    );
 
     // Redraw chunk maps on any scroll change
     for scroll in [&left_pane.scroll, &middle_pane.scroll, &right_pane.scroll] {
