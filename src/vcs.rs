@@ -185,11 +185,12 @@ pub fn discard_changes(repo_root: &Path, rel_path: &str) -> bool {
 #[must_use]
 pub fn stage_file(repo_root: &Path, rel_path: &str) -> bool {
     Command::new("git")
-        .args(["-C", &repo_root.to_string_lossy(), "add", rel_path])
+        .args(["-C", &repo_root.to_string_lossy(), "add", "--", rel_path])
         .status()
         .is_ok_and(|s| s.success())
 }
 
+#[must_use]
 pub fn unstage_file(repo_root: &Path, rel_path: &str) -> bool {
     Command::new("git")
         .args([
@@ -197,6 +198,7 @@ pub fn unstage_file(repo_root: &Path, rel_path: &str) -> bool {
             &repo_root.to_string_lossy(),
             "restore",
             "--staged",
+            "--",
             rel_path,
         ])
         .status()

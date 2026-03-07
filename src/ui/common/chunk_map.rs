@@ -1,6 +1,7 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_chunk_map(
     area: &DrawingArea,
     cr: &gtk4::cairo::Context,

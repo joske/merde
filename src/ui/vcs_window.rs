@@ -772,11 +772,12 @@ pub(super) fn build_vcs_window(
                 let raw = obj.string();
                 let (code, _, extra) = decode_vcs_row(&raw);
                 let untracked = code == "U";
-                let is_staged = !extra.is_empty();
+                let has_staged = !extra.is_empty();
+                let fully_staged = extra == "Staged";
                 act_open.set_enabled(!untracked);
                 act_discard.set_enabled(!untracked);
-                act_stage.set_enabled(!untracked && !is_staged);
-                act_unstage.set_enabled(is_staged);
+                act_stage.set_enabled(!untracked && !fully_staged);
+                act_unstage.set_enabled(has_staged);
                 act_trash.set_enabled(untracked);
                 pop.set_pointing_to(Some(&gtk4::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
                 pop.popup();
