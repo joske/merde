@@ -227,7 +227,7 @@
 ### Find / Replace
 - [ ] Ctrl+F/H: find bar highlights matches across all three buffers
 - [ ] Match count sums all three buffers
-- [ ] Replace All replaces in all three buffers
+- [ ] Replace All replaces only in editable middle buffer (not read-only left/right)
 
 ### Save
 - [ ] Ctrl+S: saves middle pane

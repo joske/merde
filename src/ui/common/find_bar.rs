@@ -194,9 +194,9 @@ pub fn build_find_bar(
         });
     }
 
-    // ── Replace all ──────────────────────────────────────────────────
+    // ── Replace all (only in editable buffers) ────────────────────────
     {
-        let bufs = buffers.clone();
+        let panes_for_replace = all_panes.clone();
         let find_e = find_entry.clone();
         let repl_e = replace_entry.clone();
         replace_all_btn.connect_clicked(move |_| {
@@ -206,7 +206,10 @@ pub fn build_find_bar(
                 return;
             }
             let needle_lower = needle.to_lowercase();
-            for buf in &bufs {
+            for (tv, buf) in &panes_for_replace {
+                if !tv.is_editable() {
+                    continue;
+                }
                 let text = buf
                     .text(&buf.start_iter(), &buf.end_iter(), false)
                     .to_string();
